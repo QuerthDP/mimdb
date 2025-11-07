@@ -1,0 +1,11 @@
+Sales Dataset
+============
+Rows: 20
+Columns: 3
+
+Transaction IDs: 2001-2020
+Total Revenue: $6104
+Average Transaction: $305.20
+Product Categories: Electronics (Laptops, Monitors, Tablets, etc.)
+
+File size: 393 bytes

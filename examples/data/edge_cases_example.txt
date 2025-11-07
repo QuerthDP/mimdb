@@ -1,0 +1,10 @@
+Edge Cases Dataset
+=================
+Rows: 9
+Columns: 2
+
+Extreme integers: MIN=-9223372036854775808, MAX=9223372036854775807
+Special strings: Empty, Unicode, Newlines, Tabs, Quotes, Long text
+
+Purpose: Test boundary conditions and edge cases
+File size: 433 bytes

@@ -1,0 +1,11 @@
+Large Dataset
+============
+Rows: 10000000
+Columns: 4
+
+ID Range: 1-10000000
+Average Value: 499.50
+Categories: 10 different categories
+Compression Ratio: Estimated high due to repetitive patterns
+
+File size: 52259822 bytes (49.84 MB)
