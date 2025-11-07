@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Save the table to a file
     let filename = "comprehensive_example.mimdb";
     println!("Serializing table to '{}'...", filename);
-    table.save_to_file(filename)?;
+    table.serialize(filename)?;
 
     let file_size = std::fs::metadata(filename)?.len();
     println!("✅ File saved successfully! Size: {} bytes", file_size);
@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Load the table back from the file
     println!("Loading table from '{}'...", filename);
-    let loaded_table = Table::load_from_file(filename)?;
+    let loaded_table = Table::deserialize(filename)?;
     println!("✅ Table loaded successfully!");
 
     // Display metrics and analyze the loaded data

@@ -41,8 +41,8 @@ fn test_data_integrity_with_checksums() {
     let original_checksums = calculate_table_checksums(&original_table);
 
     // Save and load
-    original_table.save_to_file(&file_path).unwrap();
-    let loaded_table = Table::load_from_file(&file_path).unwrap();
+    original_table.serialize(&file_path).unwrap();
+    let loaded_table = Table::deserialize(&file_path).unwrap();
 
     // Calculate checksums after loading
     let loaded_checksums = calculate_table_checksums(&loaded_table);
@@ -113,8 +113,8 @@ fn test_compression_data_integrity() {
 
     let original_stats = calculate_detailed_stats(&table);
 
-    table.save_to_file(&file_path).unwrap();
-    let loaded_table = Table::load_from_file(&file_path).unwrap();
+    table.serialize(&file_path).unwrap();
+    let loaded_table = Table::deserialize(&file_path).unwrap();
 
     let loaded_stats = calculate_detailed_stats(&loaded_table);
 
@@ -191,8 +191,8 @@ fn test_boundary_conditions_integrity() {
         )
         .unwrap();
 
-    table.save_to_file(&file_path).unwrap();
-    let loaded_table = Table::load_from_file(&file_path).unwrap();
+    table.serialize(&file_path).unwrap();
+    let loaded_table = Table::deserialize(&file_path).unwrap();
 
     // Verify every boundary value
     if let (Some(ColumnData::Int64(original)), Some(ColumnData::Int64(loaded))) = (
@@ -261,8 +261,8 @@ fn test_incremental_integrity() {
         expected_checksums.push(checksum.clone());
 
         // Save and reload
-        new_table.save_to_file(&file_path).unwrap();
-        let loaded = Table::load_from_file(&file_path).unwrap();
+        new_table.serialize(&file_path).unwrap();
+        let loaded = Table::deserialize(&file_path).unwrap();
 
         // Verify checksum matches
         let loaded_checksum = calculate_table_checksums(&loaded);
@@ -302,10 +302,10 @@ fn test_concurrent_access_patterns() {
             .join(format!("concurrent_test_{}.mimdb", process_id));
 
         // Each "process" saves the same data
-        original_data.save_to_file(&file_path).unwrap();
+        original_data.serialize(&file_path).unwrap();
 
         // Each "process" loads and verifies
-        let loaded = Table::load_from_file(&file_path).unwrap();
+        let loaded = Table::deserialize(&file_path).unwrap();
         let loaded_checksum = calculate_table_checksums(&loaded);
 
         assert_eq!(
@@ -321,7 +321,7 @@ fn test_concurrent_access_patterns() {
         let file_path = temp_dir
             .path()
             .join(format!("concurrent_test_{}.mimdb", process_id));
-        let loaded = Table::load_from_file(&file_path).unwrap();
+        let loaded = Table::deserialize(&file_path).unwrap();
         all_checksums.push(calculate_table_checksums(&loaded));
     }
 
@@ -347,10 +347,10 @@ fn test_memory_disk_consistency() {
     let memory_metrics = calculate_comprehensive_metrics(&in_memory_table);
 
     // Save to disk
-    in_memory_table.save_to_file(&file_path).unwrap();
+    in_memory_table.serialize(&file_path).unwrap();
 
     // Load from disk
-    let disk_table = Table::load_from_file(&file_path).unwrap();
+    let disk_table = Table::deserialize(&file_path).unwrap();
 
     // Calculate same metrics from disk-loaded data
     let disk_metrics = calculate_comprehensive_metrics(&disk_table);

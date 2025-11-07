@@ -27,10 +27,10 @@ fn test_comprehensive_integration() {
 
     // Test 2: Serialize and deserialize
     let file_path = temp_dir.path().join("complex_test.mimdb");
-    complex_table.save_to_file(&file_path).unwrap();
+    complex_table.serialize(&file_path).unwrap();
     assert!(file_path.exists(), "File should be created");
 
-    let loaded_table = Table::load_from_file(&file_path).unwrap();
+    let loaded_table = Table::deserialize(&file_path).unwrap();
     let loaded_metrics = calculate_table_metrics(&loaded_table);
 
     // Test 3: Verify data integrity
@@ -43,9 +43,9 @@ fn test_comprehensive_integration() {
     // Test 4: Multiple round trips
     for i in 0..3 {
         let round_trip_path = temp_dir.path().join(format!("round_trip_{}.mimdb", i));
-        loaded_table.save_to_file(&round_trip_path).unwrap();
+        loaded_table.serialize(&round_trip_path).unwrap();
 
-        let round_trip_table = Table::load_from_file(&round_trip_path).unwrap();
+        let round_trip_table = Table::deserialize(&round_trip_path).unwrap();
         let round_trip_metrics = calculate_table_metrics(&round_trip_table);
 
         assert_eq!(
@@ -66,8 +66,8 @@ fn test_edge_cases_integration() {
     // Test with empty table
     let empty_table = Table::new();
     let empty_path = temp_dir.path().join("empty.mimdb");
-    empty_table.save_to_file(&empty_path).unwrap();
-    let empty_loaded = Table::load_from_file(&empty_path).unwrap();
+    empty_table.serialize(&empty_path).unwrap();
+    let empty_loaded = Table::deserialize(&empty_path).unwrap();
     assert_eq!(empty_loaded.row_count, 0);
     assert_eq!(empty_loaded.columns.len(), 0);
 
@@ -77,8 +77,8 @@ fn test_edge_cases_integration() {
         .add_column("single".to_string(), ColumnData::Int64(vec![42]))
         .unwrap();
     let minimal_path = temp_dir.path().join("minimal.mimdb");
-    minimal_table.save_to_file(&minimal_path).unwrap();
-    let minimal_loaded = Table::load_from_file(&minimal_path).unwrap();
+    minimal_table.serialize(&minimal_path).unwrap();
+    let minimal_loaded = Table::deserialize(&minimal_path).unwrap();
     assert_eq!(minimal_loaded.row_count, 1);
 
     // Test with extreme values
@@ -101,8 +101,8 @@ fn test_edge_cases_integration() {
         .unwrap();
 
     let extreme_path = temp_dir.path().join("extreme.mimdb");
-    extreme_table.save_to_file(&extreme_path).unwrap();
-    let extreme_loaded = Table::load_from_file(&extreme_path).unwrap();
+    extreme_table.serialize(&extreme_path).unwrap();
+    let extreme_loaded = Table::deserialize(&extreme_path).unwrap();
 
     if let Some(ColumnData::Int64(data)) = extreme_loaded.get_column("extremes") {
         assert_eq!(data, &vec![i64::MIN, i64::MAX, 0]);
@@ -151,12 +151,12 @@ fn test_performance_integration() {
         // Time the serialization
         let start = std::time::Instant::now();
         let file_path = temp_dir.path().join(format!("perf_test_{}.mimdb", size));
-        large_table.save_to_file(&file_path).unwrap();
+        large_table.serialize(&file_path).unwrap();
         let save_duration = start.elapsed();
 
         // Time the deserialization
         let start = std::time::Instant::now();
-        let loaded_table = Table::load_from_file(&file_path).unwrap();
+        let loaded_table = Table::deserialize(&file_path).unwrap();
         let load_duration = start.elapsed();
 
         // Verify correctness
@@ -198,13 +198,13 @@ fn test_cross_compatibility() {
     let mut saved_files = Vec::new();
     for (name, table) in &test_tables {
         let path = temp_dir.path().join(format!("{}.mimdb", name));
-        table.save_to_file(&path).unwrap();
+        table.serialize(&path).unwrap();
         saved_files.push((name, path, table));
     }
 
     // Cross-verify: each file should load correctly regardless of order
     for (name, path, original_table) in &saved_files {
-        let loaded = Table::load_from_file(path).unwrap();
+        let loaded = Table::deserialize(path).unwrap();
 
         // Basic structure verification
         assert_eq!(
@@ -264,8 +264,8 @@ fn test_stress_patterns() {
         .unwrap();
 
     let zeros_path = temp_dir.path().join("zeros.mimdb");
-    zeros_table.save_to_file(&zeros_path).unwrap();
-    let zeros_loaded = Table::load_from_file(&zeros_path).unwrap();
+    zeros_table.serialize(&zeros_path).unwrap();
+    let zeros_loaded = Table::deserialize(&zeros_path).unwrap();
     assert_eq!(zeros_loaded.row_count, 1000);
 
     // Test 2: All same non-zero values
@@ -281,8 +281,8 @@ fn test_stress_patterns() {
         .unwrap();
 
     let same_path = temp_dir.path().join("same.mimdb");
-    same_table.save_to_file(&same_path).unwrap();
-    let same_loaded = Table::load_from_file(&same_path).unwrap();
+    same_table.serialize(&same_path).unwrap();
+    let same_loaded = Table::deserialize(&same_path).unwrap();
     assert_eq!(same_loaded.row_count, 500);
 
     // Test 3: Alternating pattern
@@ -312,8 +312,8 @@ fn test_stress_patterns() {
         .unwrap();
 
     let alternating_path = temp_dir.path().join("alternating.mimdb");
-    alternating_table.save_to_file(&alternating_path).unwrap();
-    let alternating_loaded = Table::load_from_file(&alternating_path).unwrap();
+    alternating_table.serialize(&alternating_path).unwrap();
+    let alternating_loaded = Table::deserialize(&alternating_path).unwrap();
 
     // Verify the pattern is preserved
     if let Some(ColumnData::Int64(loaded_ints)) = alternating_loaded.get_column("alternating_ints")

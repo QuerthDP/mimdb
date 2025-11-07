@@ -36,11 +36,11 @@ fn test_basic_serialization() {
         .unwrap();
 
     // Serialize
-    table.save_to_file(&file_path).unwrap();
+    table.serialize(&file_path).unwrap();
     assert!(file_path.exists());
 
     // Deserialize
-    let loaded_table = Table::load_from_file(&file_path).unwrap();
+    let loaded_table = Table::deserialize(&file_path).unwrap();
 
     // Verify structure
     assert_eq!(table.row_count, loaded_table.row_count);
@@ -73,11 +73,11 @@ fn test_empty_table_serialization() {
     let table = Table::new();
 
     // Should be able to serialize empty table
-    table.save_to_file(&file_path).unwrap();
+    table.serialize(&file_path).unwrap();
     assert!(file_path.exists());
 
     // Should be able to deserialize empty table
-    let loaded_table = Table::load_from_file(&file_path).unwrap();
+    let loaded_table = Table::deserialize(&file_path).unwrap();
     assert_eq!(loaded_table.row_count, 0);
     assert_eq!(loaded_table.columns.len(), 0);
 }
@@ -99,8 +99,8 @@ fn test_single_row_serialization() {
         )
         .unwrap();
 
-    table.save_to_file(&file_path).unwrap();
-    let loaded_table = Table::load_from_file(&file_path).unwrap();
+    table.serialize(&file_path).unwrap();
+    let loaded_table = Table::deserialize(&file_path).unwrap();
 
     assert_eq!(loaded_table.row_count, 1);
     assert_eq!(loaded_table.columns.len(), 2);
@@ -133,8 +133,8 @@ fn test_large_dataset_serialization() {
         .add_column("names".to_string(), ColumnData::Varchar(names.clone()))
         .unwrap();
 
-    table.save_to_file(&file_path).unwrap();
-    let loaded_table = Table::load_from_file(&file_path).unwrap();
+    table.serialize(&file_path).unwrap();
+    let loaded_table = Table::deserialize(&file_path).unwrap();
 
     assert_eq!(loaded_table.row_count, size);
 
@@ -181,8 +181,8 @@ fn test_special_characters_serialization() {
         )
         .unwrap();
 
-    table.save_to_file(&file_path).unwrap();
-    let loaded_table = Table::load_from_file(&file_path).unwrap();
+    table.serialize(&file_path).unwrap();
+    let loaded_table = Table::deserialize(&file_path).unwrap();
 
     if let Some(ColumnData::Varchar(loaded_strings)) = loaded_table.get_column("special") {
         assert_eq!(*loaded_strings, special_strings);
@@ -218,8 +218,8 @@ fn test_extreme_values_serialization() {
         )
         .unwrap();
 
-    table.save_to_file(&file_path).unwrap();
-    let loaded_table = Table::load_from_file(&file_path).unwrap();
+    table.serialize(&file_path).unwrap();
+    let loaded_table = Table::deserialize(&file_path).unwrap();
 
     if let Some(ColumnData::Int64(loaded_values)) = loaded_table.get_column("extremes") {
         assert_eq!(*loaded_values, extreme_values);
@@ -244,8 +244,8 @@ fn test_multiple_cycles() {
 
     // Perform multiple save/load cycles
     for cycle in 0..5 {
-        table.save_to_file(&file_path).unwrap();
-        table = Table::load_from_file(&file_path).unwrap();
+        table.serialize(&file_path).unwrap();
+        table = Table::deserialize(&file_path).unwrap();
 
         // Verify data integrity after each cycle
         if let Some(ColumnData::Int64(data)) = table.get_column("data") {
@@ -287,8 +287,8 @@ fn test_mixed_column_types() {
         )
         .unwrap();
 
-    table.save_to_file(&file_path).unwrap();
-    let loaded_table = Table::load_from_file(&file_path).unwrap();
+    table.serialize(&file_path).unwrap();
+    let loaded_table = Table::deserialize(&file_path).unwrap();
 
     assert_eq!(loaded_table.row_count, 3);
     assert_eq!(loaded_table.columns.len(), 4);
@@ -320,7 +320,7 @@ fn test_invalid_file_format() {
     fs::write(&invalid_file, b"This is not a valid MIMDB file").unwrap();
 
     // Should fail to load
-    assert!(Table::load_from_file(&invalid_file).is_err());
+    assert!(Table::deserialize(&invalid_file).is_err());
 }
 
 /// Test corrupted file handling
@@ -334,7 +334,7 @@ fn test_corrupted_file_handling() {
     table
         .add_column("test".to_string(), ColumnData::Int64(vec![1, 2, 3]))
         .unwrap();
-    table.save_to_file(&file_path).unwrap();
+    table.serialize(&file_path).unwrap();
 
     // Corrupt the file by truncating it
     let original_data = fs::read(&file_path).unwrap();
@@ -342,5 +342,5 @@ fn test_corrupted_file_handling() {
     fs::write(&file_path, corrupted_data).unwrap();
 
     // Should fail to load corrupted file
-    assert!(Table::load_from_file(&file_path).is_err());
+    assert!(Table::deserialize(&file_path).is_err());
 }
