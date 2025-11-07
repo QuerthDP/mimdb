@@ -90,6 +90,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mimdb-examples"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mimdb",
+]
+
+[[package]]
 name = "pkg-config"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"

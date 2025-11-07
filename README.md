@@ -82,20 +82,38 @@ cargo build
 
 # Run tests
 cargo test
+
+# Run the simple usage example
+cargo run --example simple_usage
+
+# Run the data analysis example
+cargo run --example data_analysis
 ```
 
-## Demo
+## Examples
 
-The demo program creates a sample table with 10 rows and 5 columns:
-- **int64 columns**: `id`, `score`, `delta_test`
-- **varchar columns**: `name`, `job_title`
+The library includes two examples in the `examples/` directory:
 
-Then it:
-1. Serializes the table to file `example_table.mimdb`
-2. Calculates and displays metrics
-3. Deserializes from file
-4. Verifies data integrity
-5. Compares metrics before and after
+1. **`simple_usage.rs`** - Comprehensive demonstration showing all library features including table creation, serialization, deserialization, and data integrity verification
+2. **`data_analysis.rs`** - Advanced analytics example demonstrating statistical analysis and character analysis capabilities
+
+## Examples Overview
+
+### Simple Usage Example
+The `simple_usage.rs` example creates a comprehensive sample table and demonstrates:
+1. Table creation with multiple column types
+2. Serialization to file `comprehensive_example.mimdb`
+3. Calculation and display of detailed metrics
+4. Deserialization from file
+5. Data integrity verification
+6. Comparison of metrics before and after serialization
+
+### Data Analysis Example
+The `data_analysis.rs` example focuses on analytical capabilities and demonstrates:
+1. Creating tables optimized for analysis
+2. Advanced statistical analysis of numeric columns
+3. Character frequency analysis for text columns
+4. Detailed data exploration and visualization
 
 ## Technologies
 

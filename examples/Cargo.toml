@@ -1,0 +1,18 @@
+[package]
+name = "mimdb-examples"
+version = "0.1.0"
+edition = "2024"
+description = "Examples for the MIMDB library"
+publish = false
+
+[[example]]
+name = "simple_usage"
+path = "simple_usage.rs"
+
+[[example]]
+name = "data_analysis"
+path = "data_analysis.rs"
+
+[dependencies]
+mimdb = { path = "../mimdb" }
+anyhow = "1.0"

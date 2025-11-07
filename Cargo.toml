@@ -1,3 +1,3 @@
 [workspace]
-members = ["mimdb"]
+members = ["mimdb", "examples"]
 resolver = "2"
