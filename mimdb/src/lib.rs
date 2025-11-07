@@ -19,10 +19,6 @@ pub mod compression;
 pub mod metrics;
 pub mod serialization;
 
-// File format constants
-const MAGIC_BYTES: &[u8; 8] = b"MIMDB001";
-const VERSION: u32 = 1;
-
 /// Column data types supported by the format
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ColumnType {

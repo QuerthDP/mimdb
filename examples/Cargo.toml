@@ -13,6 +13,10 @@ path = "simple_usage.rs"
 name = "data_analysis"
 path = "data_analysis.rs"
 
+[[example]]
+name = "batch_processing"
+path = "batch_processing.rs"
+
 [dependencies]
 mimdb = { path = "../mimdb" }
 anyhow = "1.0"
