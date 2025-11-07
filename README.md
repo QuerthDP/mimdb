@@ -1,6 +1,6 @@
-# MIMDB - Columnar Analytical Database Management System
+# MIMDB - Columnar Analytical Database Library
 
-MIMDB is an analytical database management system with a custom columnar file format. The project implements an efficient data storage format with compression and optimizations for analytical processing.
+MIMDB is a Rust library for working with columnar analytical data storage. It provides a custom columnar file format with compression and optimizations for analytical processing.
 
 ## Features
 
@@ -41,8 +41,17 @@ struct ColumnMeta { name, column_type, compressed_size, uncompressed_size, row_c
 
 ## Usage
 
+Add this to your `Cargo.toml`:
+
+```toml
+[dependencies]
+mimdb = "0.1.0"
+```
+
 ### Creating a table
 ```rust
+use mimdb::{Table, ColumnData};
+
 let mut table = Table::new();
 table.add_column("id".to_string(), ColumnData::Int64(vec![1, 2, 3, 4, 5]))?;
 table.add_column("name".to_string(), ColumnData::Varchar(vec!["Alice".to_string(), "Bob".to_string()]))?;
@@ -68,11 +77,8 @@ table.print_metrics();
 ## Building and Running
 
 ```bash
-# Build the project
+# Build the library
 cargo build
-
-# Run demo
-cargo run
 
 # Run tests
 cargo test

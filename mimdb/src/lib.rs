@@ -5,6 +5,11 @@
  * See LICENSE file for details.
  */
 
+//! MIMDB - A Columnar Analytical Database Library
+//!
+//! This library provides functionality for creating, storing, and loading columnar data tables
+//! with efficient compression algorithms optimized for analytical workloads.
+
 use anyhow::Context;
 use anyhow::Result;
 use serde::Deserialize;
@@ -69,11 +74,24 @@ impl ColumnData {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        match self {
+            ColumnData::Int64(data) => data.is_empty(),
+            ColumnData::Varchar(data) => data.is_empty(),
+        }
+    }
+
     pub fn column_type(&self) -> ColumnType {
         match self {
             ColumnData::Int64(_) => ColumnType::Int64,
             ColumnData::Varchar(_) => ColumnType::Varchar,
         }
+    }
+}
+
+impl Default for Table {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -377,12 +395,12 @@ impl Table {
         let mut averages = HashMap::new();
 
         for (name, column) in &self.columns {
-            if let ColumnData::Int64(data) = column {
-                if !data.is_empty() {
-                    let sum: i64 = data.iter().sum();
-                    let average = sum as f64 / data.len() as f64;
-                    averages.insert(name.clone(), average);
-                }
+            if let ColumnData::Int64(data) = column
+                && !data.is_empty()
+            {
+                let sum: i64 = data.iter().sum();
+                let average = sum as f64 / data.len() as f64;
+                averages.insert(name.clone(), average);
             }
         }
 
@@ -445,162 +463,13 @@ impl Table {
         let char_counts = self.calculate_ascii_counts();
         if !char_counts.is_empty() {
             println!("\nVarchar column ASCII character counts:");
-            for (name, _) in &char_counts {
+            for name in char_counts.keys() {
                 if let Some(total) = self.get_total_ascii_count(name) {
                     println!("  {}: {} total ASCII characters", name, total);
                 }
             }
         }
     }
-}
-
-fn main() {
-    println!("MIMDB - Columnar Analytical Database Demo");
-
-    if let Err(e) = run_demo() {
-        eprintln!("Error: {}", e);
-        std::process::exit(1);
-    }
-}
-
-fn run_demo() -> Result<()> {
-    let file_path = "example_table.mimdb";
-
-    // === SERIALIZATION DEMO ===
-    println!("\n=== CREATING AND SERIALIZING TABLE ===");
-
-    let table = create_example_table()?;
-    println!(
-        "Created table with {} rows and {} columns",
-        table.row_count,
-        table.columns.len()
-    );
-
-    // Show metrics before serialization
-    table.print_metrics();
-
-    // Serialize to file
-    println!("\nSerializing table to '{}'...", file_path);
-    table.save_to_file(file_path)?;
-
-    let file_size = std::fs::metadata(file_path)?.len();
-    println!("File saved successfully! Size: {} bytes", file_size);
-
-    // === DESERIALIZATION DEMO ===
-    println!("\n=== DESERIALIZING TABLE ===");
-
-    println!("Loading table from '{}'...", file_path);
-    let loaded_table = Table::load_from_file(file_path)?;
-
-    println!("Table loaded successfully!");
-    println!(
-        "Loaded {} rows and {} columns",
-        loaded_table.row_count,
-        loaded_table.columns.len()
-    );
-
-    // Show metrics after deserialization
-    loaded_table.print_metrics();
-
-    // === VERIFICATION ===
-    println!("\n=== VERIFICATION ===");
-    verify_table_data(&table, &loaded_table)?;
-
-    // Clean up
-    std::fs::remove_file(file_path)?;
-    println!("Demo completed successfully!");
-
-    Ok(())
-}
-
-fn create_example_table() -> Result<Table> {
-    let mut table = Table::new();
-
-    // Add multiple integer columns with different patterns
-    let id_data = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-    table.add_column("id".to_string(), ColumnData::Int64(id_data))?;
-
-    let score_data = vec![85, 92, 78, 96, 88, 91, 84, 89, 93, 87];
-    table.add_column("score".to_string(), ColumnData::Int64(score_data))?;
-
-    let delta_data = vec![100, 102, 99, 105, 98, 101, 97, 103, 96, 104]; // High delta compression potential
-    table.add_column("delta_test".to_string(), ColumnData::Int64(delta_data))?;
-
-    // Add varchar columns
-    let names = vec![
-        "Alice".to_string(),
-        "Bob".to_string(),
-        "Charlie".to_string(),
-        "Diana".to_string(),
-        "Eve".to_string(),
-        "Frank".to_string(),
-        "Grace".to_string(),
-        "Henry".to_string(),
-        "Ivy".to_string(),
-        "Jack".to_string(),
-    ];
-    table.add_column("name".to_string(), ColumnData::Varchar(names))?;
-
-    let descriptions = vec![
-        "Software Engineer".to_string(),
-        "Data Scientist".to_string(),
-        "Product Manager".to_string(),
-        "UX Designer".to_string(),
-        "DevOps Engineer".to_string(),
-        "Backend Developer".to_string(),
-        "Frontend Developer".to_string(),
-        "Database Administrator".to_string(),
-        "Quality Assurance".to_string(),
-        "System Architect".to_string(),
-    ];
-    table.add_column("job_title".to_string(), ColumnData::Varchar(descriptions))?;
-
-    Ok(table)
-}
-
-fn verify_table_data(original: &Table, loaded: &Table) -> Result<()> {
-    // Check basic properties
-    if original.row_count != loaded.row_count {
-        anyhow::bail!(
-            "Row count mismatch: {} vs {}",
-            original.row_count,
-            loaded.row_count
-        );
-    }
-
-    if original.columns.len() != loaded.columns.len() {
-        anyhow::bail!(
-            "Column count mismatch: {} vs {}",
-            original.columns.len(),
-            loaded.columns.len()
-        );
-    }
-
-    // Check each column
-    for (name, original_data) in &original.columns {
-        let loaded_data = loaded
-            .get_column(name)
-            .ok_or_else(|| anyhow::anyhow!("Column '{}' missing in loaded table", name))?;
-
-        match (original_data, loaded_data) {
-            (ColumnData::Int64(orig), ColumnData::Int64(loaded)) => {
-                if orig != loaded {
-                    anyhow::bail!("Integer column '{}' data mismatch", name);
-                }
-            }
-            (ColumnData::Varchar(orig), ColumnData::Varchar(loaded)) => {
-                if orig != loaded {
-                    anyhow::bail!("Varchar column '{}' data mismatch", name);
-                }
-            }
-            _ => {
-                anyhow::bail!("Column '{}' type mismatch", name);
-            }
-        }
-    }
-
-    println!("✓ All data verification checks passed!");
-    Ok(())
 }
 
 #[cfg(test)]
