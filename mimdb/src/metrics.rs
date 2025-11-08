@@ -85,10 +85,21 @@ impl Table {
         }
 
         // ASCII character counts for varchar columns
-        let char_counts = self.calculate_ascii_counts();
-        if !char_counts.is_empty() {
+        let varchar_columns: Vec<_> = self
+            .columns
+            .iter()
+            .filter_map(|(name, col)| {
+                if let ColumnData::Varchar(_) = col {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if !varchar_columns.is_empty() {
             println!("\nVarchar column ASCII character counts:");
-            for name in char_counts.keys() {
+            for name in varchar_columns {
                 if let Some(total) = self.get_total_ascii_count(name) {
                     println!("  {}: {} total ASCII characters", name, total);
                 }
