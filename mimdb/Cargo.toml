@@ -20,5 +20,9 @@ anyhow = "1.0"
 name = "generate_examples"
 path = "bin/generate_examples.rs"
 
+[[bin]]
+name = "loader"
+path = "bin/loader.rs"
+
 [dev-dependencies]
 tempfile = "3.0"

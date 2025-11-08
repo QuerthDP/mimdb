@@ -90,6 +90,47 @@ cargo run --example simple_usage
 cargo run --example data_analysis
 ```
 
+## Tools
+
+### MIMDB File Loader
+
+The `loader` utility allows you to inspect and analyze existing MIMDB files from the command line.
+
+```bash
+# Build the loader tool
+cargo build --bin loader
+
+# Analyze a MIMDB file
+./target/debug/loader examples/data/simple_example.mimdb
+
+# Example output:
+# Loading MIMDB file: examples/data/simple_example.mimdb
+# ✓ Successfully loaded table from examples/data/simple_example.mimdb
+#
+# === FILE INFORMATION ===
+# File: examples/data/simple_example.mimdb
+#
+# === TABLE METRICS ===
+# Total rows: 5
+# Total columns: 2
+#
+# Integer column averages:
+#   id: 3.0000
+#
+# Varchar column ASCII character counts:
+#   name: 23 total ASCII characters
+#
+# === COLUMN DETAILS ===
+#   name (Varchar): 5 rows
+#   id (Int64): 5 rows
+```
+
+The loader provides:
+- **File validation** - verifies MIMDB format and loads successfully
+- **Table metrics** - displays row/column counts and statistical analysis
+- **Column information** - shows data types and sizes for each column
+- **Error handling** - clear error messages for invalid files or paths
+
 ## Examples
 
 The library includes two examples in the `examples/` directory:
