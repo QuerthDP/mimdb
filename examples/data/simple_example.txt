@@ -6,4 +6,4 @@ Columns: 2
 Column 'id' (Int64): 5 values from 1 to 5
 Column 'name' (Varchar): 5 names (Alice, Bob, Charlie, Diana, Eve)
 
-File size: 176 bytes
+File size: 272 bytes

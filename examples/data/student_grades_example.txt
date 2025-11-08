@@ -8,4 +8,4 @@ Math Average: 87.6
 English Average: 89.1
 Science Average: 89.0
 
-File size: 555 bytes
+File size: 795 bytes
