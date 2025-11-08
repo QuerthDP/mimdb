@@ -5,7 +5,7 @@
  * See LICENSE file for details.
  */
 
-//! Metrics and analysis functions for MIMDB tables
+//! # Metrics and analysis functions for MIMDB tables
 //!
 //! This module provides analytical functions for computing statistics
 //! and metrics on columnar data stored in Table structures.

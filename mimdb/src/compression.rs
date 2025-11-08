@@ -5,7 +5,7 @@
  * See LICENSE file for details.
  */
 
-//! Compression utilities for columnar data
+//! # Compression utilities for columnar data
 //!
 //! This module provides compression algorithms optimized for different data types:
 //! - Int64 columns: Delta encoding + Variable Length Encoding + ZSTD

@@ -5,7 +5,7 @@
  * See LICENSE file for details.
  */
 
-//! MIMDB - A Columnar Analytical Database Library
+//! # MIMDB - A Columnar Analytical Database Library
 //!
 //! This library provides functionality for creating, storing, and loading columnar data tables
 //! with efficient compression algorithms optimized for analytical workloads.

@@ -5,7 +5,7 @@
  * See LICENSE file for details.
  */
 
-//! Input/Output operations for MIMDB files
+//! # Input/Output operations for MIMDB files
 //!
 //! This module handles serialization and deserialization of Table structures
 //! to and from the MIMDB file format, including compression and decompression.
