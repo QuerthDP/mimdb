@@ -7,24 +7,34 @@
 
 //! # Compression utilities for columnar data
 //!
-//! This module provides compression algorithms optimized for different data types:
-//! - Int64 columns: Delta encoding + Variable Length Encoding + ZSTD
-//! - Varchar columns: Length-prefixed serialization + LZ4 compression
+//! This module provides high-efficiency compression algorithms optimized for different data types:
 //!
-//! ## Batch Processing Support
+//! ### Int64 Column Compression
+//! - **Delta Encoding**: Reduces value ranges by storing differences between consecutive values
+//! - **Variable Length Encoding (VLE)**: Compresses small deltas into fewer bytes using zigzag encoding
+//! - **ZSTD Compression**: Final compression layer for optimal size reduction
 //!
-//! For memory-efficient handling of very large columns, this module includes
-//! chunked compression variants that process data in batches:
-//! - `compress_int64_column_chunked`: Processes delta encoding in memory-efficient batches
-//! - `compress_varchar_column_chunked`: Handles string serialization in chunks
+//! ### Varchar Column Compression
+//! - **Length-Prefixed Serialization**: Efficient string storage with 4-byte length headers
+//! - **LZ4 Compression**: Fast compression with size prepending for quick decompression
 //!
-//! These functions maintain identical compression output to their standard counterparts
-//! while reducing peak memory usage during compression of large datasets.
+//! ## Integration with Batch Processing
+//!
+//! These compression functions work seamlessly with the batch processing system in the
+//! serialization layer, where large datasets are automatically split into manageable
+//! chunks and compressed individually for memory-efficient processing.
 
 use anyhow::Context;
 use anyhow::Result;
 
-/// Compress int64 column using delta encoding + VLE (Variable Length Encoding)
+/// Compress int64 column using optimized multi-stage compression
+///
+/// ## Compression Pipeline:
+/// 1. **Delta Encoding**: Converts values to differences for better compression ratios
+/// 2. **Variable Length Encoding**: Compresses small deltas using zigzag encoding
+/// 3. **ZSTD Compression**: Final compression stage with level 3 for balance of speed/size
+///
+/// This approach is particularly effective for sequential or near-sequential data patterns.
 pub(crate) fn compress_int64_column(data: &[i64]) -> Result<Vec<u8>> {
     if data.is_empty() {
         return Ok(Vec::new());
@@ -49,7 +59,14 @@ pub(crate) fn compress_int64_column(data: &[i64]) -> Result<Vec<u8>> {
     Ok(compressed)
 }
 
-/// Decompress int64 column
+/// Decompress int64 column by reversing the compression pipeline
+///
+/// ## Decompression Pipeline:
+/// 1. **ZSTD Decompression**: Decompress the data stream
+/// 2. **Variable Length Decoding**: Decode VLE-encoded deltas back to i64 values
+/// 3. **Delta Reconstruction**: Rebuild original values by accumulating deltas
+///
+/// The `row_count` parameter ensures we read exactly the expected number of values.
 pub(crate) fn decompress_int64_column(
     compressed_data: &[u8],
     row_count: usize,
@@ -85,7 +102,14 @@ pub(crate) fn decompress_int64_column(
     Ok(result)
 }
 
-/// Compress varchar column using LZ4
+/// Compress varchar column using length-prefixed serialization and LZ4
+///
+/// ## Compression Process:
+/// 1. **Serialization**: Each string is prefixed with its length (4-byte little-endian u32)
+/// 2. **LZ4 Compression**: Fast compression with automatic size prepending for efficient decompression
+///
+/// This approach optimizes for both compression ratio and decompression speed, making it
+/// ideal for text data with repeated patterns or common prefixes/suffixes.
 pub(crate) fn compress_varchar_column(data: &[String]) -> Result<Vec<u8>> {
     // Serialize strings with length prefixes
     let mut serialized = Vec::new();
@@ -101,7 +125,14 @@ pub(crate) fn compress_varchar_column(data: &[String]) -> Result<Vec<u8>> {
     Ok(compressed)
 }
 
-/// Decompress varchar column
+/// Decompress varchar column by reversing the compression process
+///
+/// ## Decompression Process:
+/// 1. **LZ4 Decompression**: Decompress the data stream (size is automatically handled)
+/// 2. **Deserialization**: Read length-prefixed strings from the decompressed data
+/// 3. **UTF-8 Validation**: Ensure all string data is valid UTF-8
+///
+/// The `row_count` parameter ensures we read exactly the expected number of strings.
 pub(crate) fn decompress_varchar_column(
     compressed_data: &[u8],
     row_count: usize,
@@ -146,7 +177,13 @@ pub(crate) fn decompress_varchar_column(
     Ok(result)
 }
 
-/// Variable Length Encoding for signed integers
+/// Variable Length Encoding for signed integers using zigzag encoding
+///
+/// Converts signed integers to variable-length byte sequences where smaller absolute
+/// values use fewer bytes. Uses zigzag encoding to map signed values to unsigned:
+/// - 0 → 0, -1 → 1, 1 → 2, -2 → 3, 2 → 4, etc.
+///
+/// This is particularly effective for delta-encoded sequences where most deltas are small.
 pub(crate) fn encode_vle(value: i64, output: &mut Vec<u8>) {
     // Convert to unsigned using zigzag encoding
     let unsigned = ((value << 1) ^ (value >> 63)) as u64;
@@ -159,7 +196,13 @@ pub(crate) fn encode_vle(value: i64, output: &mut Vec<u8>) {
     output.push(remaining as u8);
 }
 
-/// Decode Variable Length Encoded integer
+/// Decode Variable Length Encoded integer with zigzag decoding
+///
+/// Reads a variable-length encoded signed integer from the byte stream and returns
+/// both the decoded value and the number of bytes consumed.
+///
+/// Returns an error if the encoded value is too large (> 64 bits) or if the input
+/// is truncated.
 pub(crate) fn decode_vle(input: &[u8]) -> Result<(i64, usize)> {
     let mut result = 0u64;
     let mut shift = 0;
@@ -182,78 +225,6 @@ pub(crate) fn decode_vle(input: &[u8]) -> Result<(i64, usize)> {
     // Convert back from zigzag encoding
     let signed = ((result >> 1) as i64) ^ (-((result & 1) as i64));
     Ok((signed, bytes_read))
-}
-
-/// Compress int64 data in memory-efficient chunks by pre-processing deltas
-pub(crate) fn compress_int64_column_chunked(data: &[i64], batch_size: usize) -> Result<Vec<u8>> {
-    // Process delta encoding in batches to reduce memory usage
-    let mut all_encoded = Vec::new();
-
-    // First value as-is
-    if !data.is_empty() {
-        encode_vle(data[0], &mut all_encoded);
-    }
-
-    // Process deltas in batches
-    for chunk in data.windows(2).collect::<Vec<_>>().chunks(batch_size) {
-        for window in chunk {
-            let delta = window[1].wrapping_sub(window[0]);
-            encode_vle(delta, &mut all_encoded);
-        }
-    }
-
-    // Compress the encoded deltas with ZSTD
-    let compressed = zstd::encode_all(&all_encoded[..], 3)?;
-    Ok(compressed)
-}
-
-/// Compress varchar data in memory-efficient chunks
-pub(crate) fn compress_varchar_column_chunked(
-    data: &[String],
-    batch_size: usize,
-) -> Result<Vec<u8>> {
-    // Process serialization in batches
-    let mut all_serialized = Vec::new();
-
-    for chunk in data.chunks(batch_size) {
-        for string in chunk {
-            let len = string.len() as u32;
-            all_serialized.extend_from_slice(&len.to_le_bytes());
-            all_serialized.extend_from_slice(string.as_bytes());
-        }
-    }
-
-    // Compress with LZ4 and prepend size
-    let compressed = lz4_flex::compress_prepend_size(&all_serialized);
-    Ok(compressed)
-}
-
-/// Compress column data using memory-efficient batching for very large datasets
-/// This processes data in chunks to reduce peak memory usage during compression
-pub(crate) fn compress_column_memory_efficient(
-    column_data: &crate::ColumnData,
-    batch_size: usize,
-) -> Result<Vec<u8>> {
-    match column_data {
-        crate::ColumnData::Int64(data) => {
-            if data.len() <= batch_size * 2 {
-                // For reasonably sized columns, use direct compression
-                compress_int64_column(data)
-            } else {
-                // For very large columns, implement streaming compression
-                compress_int64_column_chunked(data, batch_size)
-            }
-        }
-        crate::ColumnData::Varchar(data) => {
-            if data.len() <= batch_size * 2 {
-                // For reasonably sized columns, use direct compression
-                compress_varchar_column(data)
-            } else {
-                // For very large columns, implement streaming compression
-                compress_varchar_column_chunked(data, batch_size)
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -292,51 +263,5 @@ mod tests {
         let decompressed = decompress_varchar_column(&compressed, data.len()).unwrap();
 
         assert_eq!(data, decompressed);
-    }
-
-    #[test]
-    fn test_int64_chunked_compression() {
-        let data = vec![100, 102, 101, 103, 104, 105, 200, 202, 201, 203]; // Good for delta compression
-
-        // Test with different batch sizes
-        for batch_size in [2, 4, 8] {
-            let compressed_chunked = compress_int64_column_chunked(&data, batch_size).unwrap();
-            let compressed_direct = compress_int64_column(&data).unwrap();
-
-            // Both should decompress to the same result
-            let decompressed_chunked =
-                decompress_int64_column(&compressed_chunked, data.len()).unwrap();
-            let decompressed_direct =
-                decompress_int64_column(&compressed_direct, data.len()).unwrap();
-
-            assert_eq!(data, decompressed_chunked);
-            assert_eq!(decompressed_chunked, decompressed_direct);
-        }
-    }
-
-    #[test]
-    fn test_varchar_chunked_compression() {
-        let data = vec![
-            "Hello".to_string(),
-            "World".to_string(),
-            "Test".to_string(),
-            "Batch".to_string(),
-            "Processing".to_string(),
-        ];
-
-        // Test with different batch sizes
-        for batch_size in [2, 3, 5] {
-            let compressed_chunked = compress_varchar_column_chunked(&data, batch_size).unwrap();
-            let compressed_direct = compress_varchar_column(&data).unwrap();
-
-            // Both should decompress to the same result
-            let decompressed_chunked =
-                decompress_varchar_column(&compressed_chunked, data.len()).unwrap();
-            let decompressed_direct =
-                decompress_varchar_column(&compressed_direct, data.len()).unwrap();
-
-            assert_eq!(data, decompressed_chunked);
-            assert_eq!(decompressed_chunked, decompressed_direct);
-        }
     }
 }

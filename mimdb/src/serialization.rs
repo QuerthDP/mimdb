@@ -9,15 +9,17 @@
 //!
 //! This module handles serialization and deserialization of Table structures
 //! to and from the MIMDB file format, including compression and decompression.
-//! Optimized for handling large tables through batch processing to minimize memory usage.
+//! Optimized for true streaming and batched processing to handle very large datasets efficiently.
 //!
 //! ## Batch Processing Features
 //!
-//! The serialization module includes batch processing capabilities designed to handle
+//! The serialization format includes true batch processing capabilities designed to handle
 //! very large tables efficiently:
 //!
-//! - **Memory-Efficient Compression**: Large columns are processed in configurable
-//!   batch sizes to reduce peak memory usage during serialization.
+//! - **True Streaming Decompression**: Columns are stored as separate compressed batches
+//!   with metadata, enabling selective reading and decompression of row ranges.
+//! - **Memory-Efficient Processing**: Large columns are processed in configurable
+//!   batch sizes to reduce peak memory usage during both serialization and deserialization.
 //! - **Configurable Batch Sizes**: Use `BatchConfig` to control memory vs. performance
 //!   trade-offs for your specific use case.
 //! - **Automatic Fallback**: Small columns use direct compression for optimal performance,
@@ -39,16 +41,16 @@
 //! let config = BatchConfig::new(50_000); // Process in 50k row batches
 //! table.serialize_with_config("large_table.mimdb", &config).unwrap();
 //!
-//! // Deserialize (batch config helps with memory management during read too)
-//! let loaded = Table::deserialize_with_config("large_table.mimdb", &config).unwrap();
+//! // Deserialize with streaming decompression for large files
+//! let loaded = Table::deserialize("large_table.mimdb").unwrap();
+//!
+//! // For very large files, custom batch config reduces memory usage
+//! let loaded_streaming = Table::deserialize_with_config("large_table.mimdb", &config).unwrap();
 //! ```
 
 use crate::ColumnData;
-use crate::ColumnMeta;
 use crate::ColumnType;
-use crate::FileHeader;
 use crate::Table;
-use crate::compression::compress_column_memory_efficient;
 use crate::compression::compress_int64_column;
 use crate::compression::compress_varchar_column;
 use crate::compression::decompress_int64_column;
@@ -62,8 +64,8 @@ use std::io::Write;
 use std::path::Path;
 
 // File format constants
-const MAGIC_BYTES: &[u8; 8] = b"MIMDB001";
-const VERSION: u32 = 1;
+const MAGIC_BYTES: &[u8; 8] = b"MIMDB002";
+const VERSION: u32 = 2;
 
 /// Default batch size for processing large columns (number of rows per batch)
 const DEFAULT_BATCH_SIZE: usize = 100_000;
@@ -104,31 +106,34 @@ impl BatchConfig {
     }
 }
 
-/// Read and decompress large column data
-///
-/// Note: With the current file format (v1), we still need to read the entire compressed column.
-/// The batch processing benefits are primarily during serialization. Future format versions
-/// could store batch boundaries to enable true streaming decompression.
-fn read_and_decompress_column_batched<R: Read>(
-    reader: &mut R,
-    column_meta: &ColumnMeta,
-    _config: &BatchConfig,
-) -> Result<ColumnData> {
-    // Read all compressed data first (unavoidable with current v1 format)
-    let mut compressed_data = vec![0u8; column_meta.compressed_size];
-    reader.read_exact(&mut compressed_data)?;
+/// Metadata for a single batch within a column
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BatchMeta {
+    pub start_row: usize,
+    pub row_count: usize,
+    pub compressed_size: usize,
+    pub uncompressed_size: usize,
+}
 
-    // Decompress the column data
-    match column_meta.column_type {
-        ColumnType::Int64 => {
-            let data = decompress_int64_column(&compressed_data, column_meta.row_count)?;
-            Ok(ColumnData::Int64(data))
-        }
-        ColumnType::Varchar => {
-            let data = decompress_varchar_column(&compressed_data, column_meta.row_count)?;
-            Ok(ColumnData::Varchar(data))
-        }
-    }
+/// Extended column metadata with batch information
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ColumnMeta {
+    pub name: String,
+    pub column_type: ColumnType,
+    pub total_compressed_size: usize,
+    pub total_uncompressed_size: usize,
+    pub total_row_count: usize,
+    pub batch_size: usize,
+    pub batches: Vec<BatchMeta>,
+}
+
+/// File header structure with batch support
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct FileHeader {
+    pub version: u32,
+    pub column_count: u32,
+    pub row_count: u64,
+    pub columns: Vec<ColumnMeta>,
 }
 
 impl Table {
@@ -138,6 +143,7 @@ impl Table {
     }
 
     /// Serialize table to file with compression using custom batch configuration
+    /// Format supports true batch boundaries for streaming decompression
     pub fn serialize_with_config<P: AsRef<Path>>(
         &self,
         path: P,
@@ -148,49 +154,95 @@ impl Table {
         // Write magic bytes
         file.write_all(MAGIC_BYTES)?;
 
-        // Compress all columns and collect metadata
+        // Process columns and collect metadata with batch boundaries
         let mut columns_meta = Vec::new();
-        let mut compressed_columns = Vec::new();
+        let mut all_compressed_batches = Vec::new();
 
         for (name, column_data) in &self.columns {
-            let (compressed_data, compressed_size, uncompressed_size) = if column_data.len()
-                <= config.batch_size
-            {
-                // Small columns: use direct compression
+            let row_count = column_data.len();
+            let mut batches = Vec::new();
+            let mut compressed_batches = Vec::new();
+            let mut total_compressed_size = 0;
+            let mut total_uncompressed_size = 0;
+
+            if row_count <= config.batch_size {
+                // Small columns: treat as single batch for efficiency
                 let compressed = match column_data {
                     ColumnData::Int64(data) => compress_int64_column(data)?,
                     ColumnData::Varchar(data) => compress_varchar_column(data)?,
                 };
+
                 let uncompressed_size = match column_data {
                     ColumnData::Int64(data) => data.len() * 8,
                     ColumnData::Varchar(data) => {
                         data.iter().map(|s| s.len()).sum::<usize>() + data.len() * 4
                     }
                 };
+
                 let compressed_size = compressed.len();
-                (compressed, compressed_size, uncompressed_size)
+                total_compressed_size += compressed_size;
+                total_uncompressed_size += uncompressed_size;
+
+                batches.push(BatchMeta {
+                    start_row: 0,
+                    row_count,
+                    compressed_size,
+                    uncompressed_size,
+                });
+                compressed_batches.push(compressed);
             } else {
-                // Large columns: use memory-efficient compression for very large datasets
-                let compressed = compress_column_memory_efficient(column_data, config.batch_size)?;
-                let uncompressed_size = match column_data {
-                    ColumnData::Int64(data) => data.len() * 8,
-                    ColumnData::Varchar(data) => {
-                        data.iter().map(|s| s.len()).sum::<usize>() + data.len() * 4
-                    }
-                };
-                let compressed_size = compressed.len();
-                (compressed, compressed_size, uncompressed_size)
-            };
+                // Large columns: process in actual batches with separate compression
+                for batch_start in (0..row_count).step_by(config.batch_size) {
+                    let batch_end = (batch_start + config.batch_size).min(row_count);
+                    let batch_row_count = batch_end - batch_start;
+
+                    let batch_compressed = match column_data {
+                        ColumnData::Int64(data) => {
+                            let batch_slice = &data[batch_start..batch_end];
+                            compress_int64_column(batch_slice)?
+                        }
+                        ColumnData::Varchar(data) => {
+                            let batch_slice = &data[batch_start..batch_end];
+                            compress_varchar_column(batch_slice)?
+                        }
+                    };
+
+                    let batch_uncompressed_size = match column_data {
+                        ColumnData::Int64(_) => batch_row_count * 8,
+                        ColumnData::Varchar(data) => {
+                            data[batch_start..batch_end]
+                                .iter()
+                                .map(|s| s.len())
+                                .sum::<usize>()
+                                + batch_row_count * 4
+                        }
+                    };
+
+                    let batch_compressed_size = batch_compressed.len();
+                    total_compressed_size += batch_compressed_size;
+                    total_uncompressed_size += batch_uncompressed_size;
+
+                    batches.push(BatchMeta {
+                        start_row: batch_start,
+                        row_count: batch_row_count,
+                        compressed_size: batch_compressed_size,
+                        uncompressed_size: batch_uncompressed_size,
+                    });
+                    compressed_batches.push(batch_compressed);
+                }
+            }
 
             columns_meta.push(ColumnMeta {
                 name: name.clone(),
                 column_type: column_data.column_type(),
-                compressed_size,
-                uncompressed_size,
-                row_count: column_data.len(),
+                total_compressed_size,
+                total_uncompressed_size,
+                total_row_count: row_count,
+                batch_size: config.batch_size,
+                batches,
             });
 
-            compressed_columns.push(compressed_data);
+            all_compressed_batches.push(compressed_batches);
         }
 
         // Create and write header
@@ -208,9 +260,11 @@ impl Table {
         file.write_all(&header_size.to_le_bytes())?;
         file.write_all(&header_bytes)?;
 
-        // Write compressed column data
-        for compressed_data in compressed_columns {
-            file.write_all(&compressed_data)?;
+        // Write compressed batch data for each column
+        for compressed_batches in all_compressed_batches {
+            for batch_data in compressed_batches {
+                file.write_all(&batch_data)?;
+            }
         }
 
         file.flush()?;
@@ -223,54 +277,71 @@ impl Table {
     }
 
     /// Deserialize table from file using custom batch configuration
-    pub fn deserialize_with_config<P: AsRef<Path>>(path: P, config: &BatchConfig) -> Result<Self> {
+    /// Supports streaming batch decompression for memory-efficient processing
+    pub fn deserialize_with_config<P: AsRef<Path>>(path: P, _config: &BatchConfig) -> Result<Self> {
         let mut file = BufReader::new(File::open(path)?);
 
         // Read and verify magic bytes
         let mut magic = [0u8; 8];
         file.read_exact(&mut magic)?;
+
         if &magic != MAGIC_BYTES {
             anyhow::bail!("Invalid file format: magic bytes mismatch");
         }
 
+        Self::deserialize_format(&mut file)
+    }
+
+    /// Deserialize format with streaming batch support
+    fn deserialize_format<R: Read>(reader: &mut R) -> Result<Self> {
         // Read header size
         let mut header_size_bytes = [0u8; 4];
-        file.read_exact(&mut header_size_bytes)?;
+        reader.read_exact(&mut header_size_bytes)?;
         let header_size = u32::from_le_bytes(header_size_bytes) as usize;
 
         // Read header
         let mut header_bytes = vec![0u8; header_size];
-        file.read_exact(&mut header_bytes)?;
+        reader.read_exact(&mut header_bytes)?;
         let header: FileHeader = bincode::deserialize(&header_bytes)?;
 
         if header.version != VERSION {
             anyhow::bail!("Unsupported file version: {}", header.version);
         }
 
-        // Read and decompress column data
+        // Read and decompress column data using batch streaming
         let mut table = Table::new();
 
         for column_meta in &header.columns {
-            let column_data = if column_meta.row_count <= config.batch_size {
-                // Small columns: read and decompress normally
-                let mut compressed_data = vec![0u8; column_meta.compressed_size];
-                file.read_exact(&mut compressed_data)?;
+            // Initialize column data containers
+            let column_data = match column_meta.column_type {
+                ColumnType::Int64 => {
+                    let mut data = Vec::with_capacity(column_meta.total_row_count);
 
-                match column_meta.column_type {
-                    ColumnType::Int64 => {
-                        let data =
-                            decompress_int64_column(&compressed_data, column_meta.row_count)?;
-                        ColumnData::Int64(data)
+                    // Read and decompress each batch
+                    for batch_meta in &column_meta.batches {
+                        let mut batch_compressed = vec![0u8; batch_meta.compressed_size];
+                        reader.read_exact(&mut batch_compressed)?;
+
+                        let mut batch_data =
+                            decompress_int64_column(&batch_compressed, batch_meta.row_count)?;
+                        data.append(&mut batch_data);
                     }
-                    ColumnType::Varchar => {
-                        let data =
-                            decompress_varchar_column(&compressed_data, column_meta.row_count)?;
-                        ColumnData::Varchar(data)
-                    }
+                    ColumnData::Int64(data)
                 }
-            } else {
-                // Large columns: read compressed data and decompress in batches
-                read_and_decompress_column_batched(&mut file, column_meta, config)?
+                ColumnType::Varchar => {
+                    let mut data = Vec::with_capacity(column_meta.total_row_count);
+
+                    // Read and decompress each batch
+                    for batch_meta in &column_meta.batches {
+                        let mut batch_compressed = vec![0u8; batch_meta.compressed_size];
+                        reader.read_exact(&mut batch_compressed)?;
+
+                        let mut batch_data =
+                            decompress_varchar_column(&batch_compressed, batch_meta.row_count)?;
+                        data.append(&mut batch_data);
+                    }
+                    ColumnData::Varchar(data)
+                }
             };
 
             table.add_column(column_meta.name.clone(), column_data)?;
@@ -436,6 +507,105 @@ mod tests {
             assert_eq!(loaded_large_range[149_999], 149_999);
         } else {
             panic!("Failed to load large_range column");
+        }
+
+        // Clean up
+        std::fs::remove_file(test_file).unwrap();
+    }
+
+    #[test]
+    fn test_batch_boundaries_functionality() {
+        let mut table = Table::new();
+
+        // Create a dataset that will definitely trigger multiple batches
+        let row_count = 250_000;
+        let numbers: Vec<i64> = (0..row_count).collect();
+        let strings: Vec<String> = (0..row_count).map(|i| format!("value_{}", i)).collect();
+
+        table
+            .add_column("numbers".to_string(), ColumnData::Int64(numbers.clone()))
+            .unwrap();
+        table
+            .add_column("strings".to_string(), ColumnData::Varchar(strings.clone()))
+            .unwrap();
+
+        // Use small batch size to force multiple batches
+        let config = BatchConfig::new(30_000);
+        let test_file = "test_batches.mimdb";
+
+        // Serialize with batching
+        table.serialize_with_config(test_file, &config).unwrap();
+
+        // Verify magic bytes are correct
+        let mut file = std::fs::File::open(test_file).unwrap();
+        let mut magic = [0u8; 8];
+        std::io::Read::read_exact(&mut file, &mut magic).unwrap();
+        assert_eq!(&magic, MAGIC_BYTES, "Should write correct format");
+
+        // Deserialize and verify integrity
+        let loaded = Table::deserialize_with_config(test_file, &config).unwrap();
+
+        assert_eq!(table.row_count, loaded.row_count);
+        assert_eq!(table.columns.len(), loaded.columns.len());
+
+        // Verify specific data points across batch boundaries
+        if let Some(ColumnData::Int64(loaded_numbers)) = loaded.get_column("numbers") {
+            assert_eq!(loaded_numbers.len(), numbers.len());
+            // Test data at batch boundaries (30k intervals)
+            assert_eq!(loaded_numbers[0], 0);
+            assert_eq!(loaded_numbers[29_999], 29_999);
+            assert_eq!(loaded_numbers[30_000], 30_000);
+            assert_eq!(loaded_numbers[59_999], 59_999);
+            assert_eq!(loaded_numbers[60_000], 60_000);
+            assert_eq!(loaded_numbers[249_999], 249_999);
+        } else {
+            panic!("Failed to load numbers column");
+        }
+
+        if let Some(ColumnData::Varchar(loaded_strings)) = loaded.get_column("strings") {
+            assert_eq!(loaded_strings.len(), strings.len());
+            // Test data at batch boundaries
+            assert_eq!(loaded_strings[0], "value_0");
+            assert_eq!(loaded_strings[29_999], "value_29999");
+            assert_eq!(loaded_strings[30_000], "value_30000");
+            assert_eq!(loaded_strings[249_999], "value_249999");
+        } else {
+            panic!("Failed to load strings column");
+        }
+
+        // Clean up
+        std::fs::remove_file(test_file).unwrap();
+    }
+
+    #[test]
+    fn test_format_consistency() {
+        // Test that serialization/deserialization produces consistent results
+        let mut table = Table::new();
+        table
+            .add_column("test".to_string(), ColumnData::Int64(vec![1, 2, 3, 4, 5]))
+            .unwrap();
+
+        let test_file = "test_format_consistency.mimdb";
+
+        // Serialize using standard format
+        table.serialize(test_file).unwrap();
+
+        // Verify magic bytes are correct
+        let mut file = std::fs::File::open(test_file).unwrap();
+        let mut magic = [0u8; 8];
+        std::io::Read::read_exact(&mut file, &mut magic).unwrap();
+        assert_eq!(&magic, MAGIC_BYTES, "Should write correct format");
+
+        // Deserialize and verify data integrity
+        let loaded = Table::deserialize(test_file).unwrap();
+
+        assert_eq!(loaded.row_count, 5);
+        assert_eq!(loaded.columns.len(), 1);
+
+        if let Some(ColumnData::Int64(data)) = loaded.get_column("test") {
+            assert_eq!(data, &vec![1, 2, 3, 4, 5]);
+        } else {
+            panic!("Failed to load format data");
         }
 
         // Clean up

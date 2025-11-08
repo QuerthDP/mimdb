@@ -26,25 +26,6 @@ pub enum ColumnType {
     Varchar,
 }
 
-/// Column metadata
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ColumnMeta {
-    pub name: String,
-    pub column_type: ColumnType,
-    pub compressed_size: usize,
-    pub uncompressed_size: usize,
-    pub row_count: usize,
-}
-
-/// File header structure
-#[derive(Debug, Serialize, Deserialize)]
-pub struct FileHeader {
-    pub version: u32,
-    pub column_count: u32,
-    pub row_count: u64,
-    pub columns: Vec<ColumnMeta>,
-}
-
 /// In-memory column data representation optimized for CPU processing
 #[derive(Debug, Clone)]
 pub enum ColumnData {
