@@ -92,6 +92,12 @@ impl BatchConfig {
     /// Create new batch config with validated batch size
     pub fn new(batch_size: usize) -> Self {
         let validated_size = batch_size.clamp(MIN_BATCH_SIZE, MAX_BATCH_SIZE);
+        if validated_size != batch_size {
+            eprintln!(
+                "Warning: Batch size {} is out of bounds. Using {} instead.",
+                batch_size, validated_size
+            );
+        }
         Self {
             batch_size: validated_size,
         }
