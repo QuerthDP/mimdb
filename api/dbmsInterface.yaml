@@ -3,7 +3,7 @@ info:
   title: MIMUW ISBD database system
   description: |-
     This file describes interface between DBMS system and user.
-  version: 1.0.1
+  version: 1.0.2
 tags:
   - name: schema
     description: Endpoints used to access schema structure
@@ -276,7 +276,7 @@ components:
       required:
         - queryId
         - status
-        - queryString
+        - queryDefinition
       properties:
         queryId:
           $ref: "#/components/schemas/QueryID"
