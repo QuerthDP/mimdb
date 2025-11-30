@@ -141,34 +141,6 @@ The library includes three examples in the `examples/` directory:
 
 See the [examples README](examples/README.md) for detailed information about each example.
 
-## Performance
-
-Example results for different dataset sizes:
-
-**Small dataset (5 rows, 2 columns)**:
-- **File size**: 272 bytes (includes header, metadata and compressed data)
-
-**Medium dataset (10 rows, 6 columns)**:
-- **File size**: 1,026 bytes (includes header, metadata and compressed data)
-
-**Large dataset (10M rows, 2 columns)**:
-- **Serialization time**: ~1.3 seconds
-- **Deserialization time**: ~3.4 seconds
-- **File size**: ~1.1 MB (99.99% compression ratio from raw data)
-- **Memory efficiency**: Batch processing allows handling datasets larger than available RAM
-- **Configurable memory usage**: Batch sizes from 1k to 1M rows per batch
-- **Consistent performance**: Similar performance across different batch sizes
-
-## Extensions
-
-The project can be extended with:
-- Additional data types (float, boolean, timestamp)
-- Column indexes
-- Parallel processing
-- REST API endpoints
-- Advanced statistical metrics
-- Query language
-
 ## License
 
 This project is intended for educational use only by employees and students of MIMUW.
