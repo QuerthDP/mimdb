@@ -129,89 +129,17 @@ cargo build --bin loader
 
 # Analyze a MIMDB file
 ./target/debug/loader examples/data/simple_example.mimdb
-
-# Example output:
-# Loading MIMDB file: examples/data/simple_example.mimdb
-# ✓ Successfully loaded table from examples/data/simple_example.mimdb
-#
-# === FILE INFORMATION ===
-# File: examples/data/simple_example.mimdb
-#
-# === TABLE METRICS ===
-# Total rows: 5
-# Total columns: 2
-#
-# Integer column averages:
-#   id: 3.0000
-#
-# Varchar column ASCII character counts:
-#   name: 23 total ASCII characters
-#
-# === COLUMN DETAILS ===
-#   name (Varchar): 5 rows
-#   id (Int64): 5 rows
-#
-# ✓ Analysis complete
 ```
-
-The loader provides:
-- **File validation** - verifies MIMDB format and loads successfully
-- **Table metrics** - displays row/column counts and statistical analysis
-- **Column information** - shows data types and sizes for each column
-- **Error handling** - clear error messages for invalid files or paths
 
 ## Examples
 
 The library includes three examples in the `examples/` directory:
 
 1. **`simple_usage.rs`** - Comprehensive demonstration showing all library features including table creation, serialization, deserialization, and data integrity verification
-2. **`data_analysis.rs`** - Advanced analytics example demonstrating statistical analysis and character analysis capabilities  
+2. **`data_analysis.rs`** - Advanced analytics example demonstrating statistical analysis and character analysis capabilities
 3. **`batch_processing.rs`** - Demonstrates memory-efficient processing of large datasets (10M+ rows) using configurable batch sizes
 
-## Examples Overview
-
-### Simple Usage Example
-The `simple_usage.rs` example creates a comprehensive sample table and demonstrates:
-1. Table creation with multiple column types
-2. Serialization to file `comprehensive_example.mimdb`
-3. Calculation and display of detailed metrics
-4. Deserialization from file
-5. Data integrity verification
-6. Comparison of metrics before and after serialization
-
-### Data Analysis Example
-The `data_analysis.rs` example focuses on analytical capabilities and demonstrates:
-1. Creating tables optimized for analysis
-2. Advanced statistical analysis of numeric columns
-3. Character frequency analysis for text columns
-4. Detailed data exploration and visualization
-
-### Batch Processing Example
-The `batch_processing.rs` example demonstrates handling large datasets and shows:
-1. Creating large tables (10 million rows) for performance testing
-2. Comparing different batch sizes (10k, 100k, 500k rows) and their impact on performance
-3. Memory-efficient serialization and deserialization using `BatchConfig`
-4. Performance benchmarking of serialization/deserialization times
-5. File size analysis and compression effectiveness on large datasets
-6. Data integrity verification across all batch configurations
-
-## Technologies
-
-- **Rust 2024 Edition** - memory safety and performance
-- **ZSTD** - compression for numeric data
-- **lz4_flex** - fast compression for text data
-- **Serde + Bincode** - metadata serialization
-- **Anyhow** - error handling
-
-## Optimizations
-
-1. **Delta Encoding** - reduces size of numeric data with similar values
-2. **Variable Length Encoding** - reduces size of small numbers
-3. **Zigzag Encoding** - efficient encoding of negative numbers
-4. **Columnar layout** - better memory locality for analytical operations
-5. **Algorithmic compression** - ZSTD for numbers, lz4_flex for text
-6. **Batch processing** - configurable batch sizes for memory-efficient handling of large datasets
-7. **Streaming decompression** - process data larger than available RAM
+See the [examples README](examples/README.md) for detailed information about each example.
 
 ## Performance
 
