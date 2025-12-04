@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "A Columnar Analytical Database Library"
 license-file = "LICENSE.md"
+default-run = "server"
 
 [lib]
 name = "mimdb"
@@ -18,12 +19,15 @@ bincode = "1.3"
 anyhow = "1.0"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["trace"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 csv = "1.3"
 chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde_yaml = "0.9"
+utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 [[bin]]
@@ -33,6 +37,10 @@ path = "bin/generate_examples.rs"
 [[bin]]
 name = "loader"
 path = "bin/loader.rs"
+
+[[bin]]
+name = "server"
+path = "bin/server.rs"
 
 [dev-dependencies]
 tempfile = "3.0"
