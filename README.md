@@ -260,7 +260,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mimdb = "0.1.0"
+mimdb = "0.2.0"
 ```
 
 ### Creating a table
