@@ -16,6 +16,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 pub mod compression;
+pub mod metastore;
 pub mod metrics;
 pub mod serialization;
 
