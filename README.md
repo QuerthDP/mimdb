@@ -203,8 +203,8 @@ curl http://localhost:3000/system/info
 
 ## Example Workflow
 
+### 1. Create a table
 ```bash
-# 1. Create a table
 TABLE_ID=$(curl -s -X PUT http://localhost:3000/table \
   -H "Content-Type: application/json" \
   -d '{
@@ -217,13 +217,17 @@ TABLE_ID=$(curl -s -X PUT http://localhost:3000/table \
   }' | tr -d '"')
 
 echo "Created table: $TABLE_ID"
+```
 
-# 2. Prepare CSV file (in /data directory when using Docker)
+### 2. Prepare CSV file (in /data directory when using Docker)
+```bash
 echo "1,Alice,50000" > /data/employees.csv
 echo "2,Bob,60000" >> /data/employees.csv
 echo "3,Charlie,55000" >> /data/employees.csv
+```
 
-# 3. Load CSV data into table
+### 3. Load CSV data into table
+```bash
 COPY_QUERY_ID=$(curl -s -X POST http://localhost:3000/query \
   -H "Content-Type: application/json" \
   -d '{
@@ -235,11 +239,15 @@ COPY_QUERY_ID=$(curl -s -X POST http://localhost:3000/query \
   }' | tr -d '"')
 
 echo "COPY query ID: $COPY_QUERY_ID"
+```
 
-# 4. Check query status
+### 4. Check query status
+```bash
 curl http://localhost:3000/query/$COPY_QUERY_ID
+```
 
-# 5. Select all data from table
+### 5. Select all data from table
+```bash
 SELECT_QUERY_ID=$(curl -s -X POST http://localhost:3000/query \
   -H "Content-Type: application/json" \
   -d '{
@@ -249,8 +257,10 @@ SELECT_QUERY_ID=$(curl -s -X POST http://localhost:3000/query \
   }' | tr -d '"')
 
 echo "SELECT query ID: $SELECT_QUERY_ID"
+```
 
-# 6. Get results
+### 6. Get results
+```bash
 curl http://localhost:3000/result/$SELECT_QUERY_ID
 ```
 
