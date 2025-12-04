@@ -9,12 +9,20 @@
 //!
 //! This library provides functionality for creating, storing, and loading columnar data tables
 //! with efficient compression algorithms optimized for analytical workloads.
+//!
+//! ## Features
+//!
+//! - **Columnar storage**: Efficient storage format for analytical queries
+//! - **Compression**: Delta encoding, VLE, ZSTD and LZ4 compression
+//! - **REST API**: Full REST API for database operations
+//! - **Metastore**: Persistent metadata storage for tables and queries
 
 use anyhow::Result;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 
+pub mod api;
 pub mod compression;
 pub mod metastore;
 pub mod metrics;
