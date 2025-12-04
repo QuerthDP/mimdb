@@ -6,10 +6,21 @@ This directory contains comprehensive tests for the MIMDB columnar database libr
 
 ### Test Files
 
+- **`api_tests.rs`** - End-to-end REST API tests (Public Interface Testing)
+  - System info endpoint (`test_system_info`)
+  - Table operations: list, create, get, delete (`test_list_tables_empty`, `test_create_table`, `test_get_table_by_id`, `test_delete_table`)
+  - Table validation: duplicate names, duplicate columns, empty names, no columns (`test_create_table_duplicate_name`, `test_create_table_duplicate_columns`, `test_empty_table_name`, `test_table_with_no_columns`)
+  - Query operations: list, SELECT, COPY (`test_list_queries_empty`, `test_select_query_on_empty_table`, `test_copy_and_select_full_workflow`)
+  - COPY edge cases: with header, nonexistent file, multiple operations (`test_copy_with_header`, `test_copy_nonexistent_file`, `test_multiple_copy_operations`)
+  - Result handling: row limits (`test_result_with_row_limit`)
+  - Persistence across restarts (`test_persistence_across_restarts`)
+  - Error handling: invalid JSON, nonexistent tables (`test_invalid_json_request`, `test_select_nonexistent_table`)
+  - Query status tracking (`test_query_status_completed`, `test_queries_list_after_operations`)
+
 - **`serialization_tests.rs`** - Tests for serialization and deserialization functionality
   - Basic serialization/deserialization (`test_basic_serialization`)
   - Empty table handling (`test_empty_table_serialization`)
-  - Single row tables (`test_single_row_serialization`) 
+  - Single row tables (`test_single_row_serialization`)
   - Large dataset testing (`test_large_dataset_serialization`)
   - Special character handling (`test_special_characters_serialization`)
   - Extreme value testing (`test_extreme_values_serialization`)
@@ -46,6 +57,9 @@ cargo test
 
 ### Run Specific Test Categories
 ```bash
+# API tests
+cargo test api
+
 # Serialization tests
 cargo test serialization
 
@@ -70,7 +84,16 @@ cargo test -- --test-threads=4
 
 The test suite covers:
 
-1. **Serialization/Deserialization**
+1. **REST API (Public Interface Testing)**
+   - Table CRUD operations
+   - Query submission and execution
+   - COPY and SELECT query workflows
+   - Result retrieval with row limits
+   - Error responses and validation
+   - Persistence across server restarts
+   - System information endpoints
+
+2. **Serialization/Deserialization**
    - Basic round-trip operations
    - Edge cases (empty tables, single rows)
    - Large datasets (10,000+ rows)
@@ -78,25 +101,25 @@ The test suite covers:
    - Extreme integer values
    - Multiple data types
 
-2. **Data Integrity**
+3. **Data Integrity**
    - Checksum verification
    - Statistical property preservation
    - Compression/decompression integrity
    - Boundary value testing
    - Cross-platform consistency
 
-3. **File Operations**
+4. **File Operations**
    - Format consistency
    - Corruption detection
    - Cross-loading verification
 
-4. **Performance**
+5. **Performance**
    - Scalability testing
    - Compression effectiveness
    - Load/save performance
    - Memory usage patterns
 
-5. **Edge Cases**
+6. **Edge Cases**
    - Empty data structures
    - Maximum/minimum values
    - Special character handling

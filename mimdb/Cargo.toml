@@ -36,3 +36,5 @@ path = "bin/loader.rs"
 
 [dev-dependencies]
 tempfile = "3.0"
+axum-test = "17"
+tower = "0.5"
