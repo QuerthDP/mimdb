@@ -1,11 +1,18 @@
-# MIMDB - Columnar Analytical Database Library
+# MIMDB - Columnar Analytical Database
 
-MIMDB is a Rust library for working with columnar analytical data storage. It provides a custom columnar file format with compression and optimizations for analytical processing.
+MIMDB is a columnar analytical database system implemented in Rust. It provides a REST API for database operations, persistent storage with compression, and Docker support for easy deployment.
 
 ## Features
 
+### Database System
+- **REST API**: Full HTTP API for database operations (tables, queries, results)
+- **Metastore**: Persistent metadata storage surviving restarts
+- **COPY operations**: Load CSV files into tables
+- **SELECT operations**: Query all rows from a table
+- **Atomic operations**: Data changes are visible only after completion
+
 ### File Format
-- **Two column data types**: 64-bit signed integers (int64) and variable-length strings (VARCHAR)
+- **Two column data types**: 64-bit signed integers (INT64) and variable-length strings (VARCHAR)
 - **Int64 compression**: Variable Length Encoding (VLE) + Delta Encoding + ZSTD
 - **VARCHAR compression**: LZ4 with length prefixes
 - **Tabular data**: all columns have the same length (number of rows)
@@ -42,7 +49,212 @@ struct FileHeader { version, column_count, row_count, columns }
 struct ColumnMeta { name, column_type, compressed_size, uncompressed_size, row_count }
 ```
 
-## Usage
+## Quick Start
+
+### Building
+
+```bash
+# Build the project
+make build
+
+# Build release version
+make release
+
+# Build only the server
+make server
+```
+
+### Running the Server
+
+#### Local Development
+
+```bash
+# Run the server locally (release mode)
+make run
+
+# Or with cargo directly
+cargo run --bin server -- --port 3000 --data-dir ./mimdb_data
+```
+
+The server will start on `http://localhost:3000` (by default).
+
+#### Docker Deployment
+
+```bash
+# Build Docker image
+make docker
+
+# Run Docker container
+make docker-run
+
+# Or manually with custom paths:
+docker run -d \
+    --name mimdb \
+    -p 3000:3000 \
+    -v /path/to/csv/files:/data \
+    -v mimdb_data:/app/mimdb_data \
+    mimdb:latest
+```
+
+**Volumes:**
+- `/data` - Mount your CSV files here for COPY operations
+- `/app/mimdb_data` - Database storage (metadata and data files)
+
+**Important:** The `sourceFilepath` in COPY queries must use the container path (`/data/...`), not your local path.
+
+## REST API
+
+The server implements a REST API according to the `api/dbmsInterface.yaml` OpenAPI specification.
+
+### API Documentation
+
+The server provides interactive API documentation via Swagger UI:
+- **Swagger UI**: `http://localhost:3000/swagger-ui`
+- **OpenAPI JSON**: `http://localhost:3000/api-docs/openapi.json`
+
+### Table Operations
+
+#### List all tables
+```bash
+curl http://localhost:3000/tables
+```
+
+#### Get table details
+```bash
+curl http://localhost:3000/table/{tableId}
+```
+
+#### Create a table
+```bash
+curl -X PUT http://localhost:3000/table \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "users",
+    "columns": [
+      {"name": "id", "type": "INT64"},
+      {"name": "name", "type": "VARCHAR"}
+    ]
+  }'
+```
+
+#### Delete a table
+```bash
+curl -X DELETE http://localhost:3000/table/{tableId}
+```
+
+### Query Operations
+
+#### List all queries
+```bash
+curl http://localhost:3000/queries
+```
+
+#### Get query details
+```bash
+curl http://localhost:3000/query/{queryId}
+```
+
+#### Execute COPY query (load CSV into table)
+```bash
+curl -X POST http://localhost:3000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queryDefinition": {
+      "sourceFilepath": "/data/users.csv",
+      "destinationTableName": "users",
+      "doesCsvContainHeader": false
+    }
+  }'
+```
+
+#### Execute SELECT query
+```bash
+curl -X POST http://localhost:3000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queryDefinition": {
+      "tableName": "users"
+    }
+  }'
+```
+
+### Result Operations
+
+#### Get query result
+```bash
+curl http://localhost:3000/result/{queryId}
+
+# With row limit
+curl -X GET http://localhost:3000/result/{queryId} \
+  -H "Content-Type: application/json" \
+  -d '{"rowLimit": 100}'
+```
+
+#### Get query error (for failed queries)
+```bash
+curl http://localhost:3000/error/{queryId}
+```
+
+### System Information
+
+```bash
+curl http://localhost:3000/system/info
+```
+
+## Example Workflow
+
+```bash
+# 1. Create a table
+TABLE_ID=$(curl -s -X PUT http://localhost:3000/table \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "employees",
+    "columns": [
+      {"name": "id", "type": "INT64"},
+      {"name": "name", "type": "VARCHAR"},
+      {"name": "salary", "type": "INT64"}
+    ]
+  }' | tr -d '"')
+
+echo "Created table: $TABLE_ID"
+
+# 2. Prepare CSV file (in /data directory when using Docker)
+echo "1,Alice,50000" > /data/employees.csv
+echo "2,Bob,60000" >> /data/employees.csv
+echo "3,Charlie,55000" >> /data/employees.csv
+
+# 3. Load CSV data into table
+COPY_QUERY_ID=$(curl -s -X POST http://localhost:3000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queryDefinition": {
+      "sourceFilepath": "/data/employees.csv",
+      "destinationTableName": "employees",
+      "doesCsvContainHeader": false
+    }
+  }' | tr -d '"')
+
+echo "COPY query ID: $COPY_QUERY_ID"
+
+# 4. Check query status
+curl http://localhost:3000/query/$COPY_QUERY_ID
+
+# 5. Select all data from table
+SELECT_QUERY_ID=$(curl -s -X POST http://localhost:3000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queryDefinition": {
+      "tableName": "employees"
+    }
+  }' | tr -d '"')
+
+echo "SELECT query ID: $SELECT_QUERY_ID"
+
+# 6. Get results
+curl http://localhost:3000/result/$SELECT_QUERY_ID
+```
+
+## Library Usage
 
 Add this to your `Cargo.toml`:
 
@@ -98,26 +310,19 @@ table.serialize_with_config("large_data.mimdb", &config)?;
 let loaded_table = Table::deserialize_with_config("large_data.mimdb", &config)?;
 ```
 
-## Building and Running
+## Running Tests
 
 ```bash
-# Build the library
-cargo build
+# Run all tests
+make test
 
-# Run tests
+# Or with cargo
 cargo test
-
-# Run the simple usage example
-cargo run --example simple_usage
-
-# Run the data analysis example
-cargo run --example data_analysis
-
-# Run the batch processing example (handles large datasets)
-cargo run --example batch_processing
 ```
 
 ## Tools
+
+The project includes several command-line utilities in the `mimdb/bin/` directory. See the [binaries README](mimdb/bin/README.md) for detailed documentation.
 
 ### MIMDB File Loader
 
