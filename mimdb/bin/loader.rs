@@ -51,6 +51,7 @@ fn main() {
         let column_type = match column_data {
             mimdb::ColumnData::Int64(_) => "Int64",
             mimdb::ColumnData::Varchar(_) => "Varchar",
+            mimdb::ColumnData::Bool(_) => "Bool",
         };
         let row_count = column_data.len();
         println!("  {} ({}): {} rows", name, column_type, row_count);

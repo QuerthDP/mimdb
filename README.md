@@ -12,9 +12,10 @@ MIMDB is a columnar analytical database system implemented in Rust. It provides 
 - **Atomic operations**: Data changes are visible only after completion
 
 ### File Format
-- **Two column data types**: 64-bit signed integers (INT64) and variable-length strings (VARCHAR)
+- **Three column data types**: 64-bit signed integers (INT64), variable-length strings (VARCHAR), and boolean values (BOOL)
 - **Int64 compression**: Variable Length Encoding (VLE) + Delta Encoding + ZSTD
 - **VARCHAR compression**: LZ4 with length prefixes
+- **Bool compression**: Bit-packed representation with efficient binary encoding
 - **Tabular data**: all columns have the same length (number of rows)
 - **File header**: column metadata, versioning, magic bytes
 
@@ -40,8 +41,8 @@ MIMDB is a columnar analytical database system implemented in Rust. It provides 
 
 ```rust
 // Main data types
-pub enum ColumnType { Int64, Varchar }
-pub enum ColumnData { Int64(Vec<i64>), Varchar(Vec<String>) }
+pub enum ColumnType { Int64, Varchar, Bool }
+pub enum ColumnData { Int64(Vec<i64>), Varchar(Vec<String>), Bool(Vec<bool>) }
 pub struct Table { columns: HashMap<String, ColumnData>, row_count: usize }
 
 // File format

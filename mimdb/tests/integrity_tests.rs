@@ -402,6 +402,9 @@ fn calculate_table_checksums(table: &Table) -> HashMap<String, u64> {
                     .fold(0u64, |acc, b| acc.wrapping_add((b as u64).wrapping_mul(37)));
                 acc.wrapping_add(str_hash.wrapping_mul(31))
             }),
+            ColumnData::Bool(data) => data.iter().fold(0u64, |acc, &val| {
+                acc.wrapping_add((val as u64).wrapping_mul(31))
+            }),
         };
         checksums.insert(name.clone(), checksum);
     }
@@ -465,6 +468,13 @@ fn calculate_detailed_stats(table: &Table) -> HashMap<String, String> {
                 stats.insert(format!("{}_total_chars", name), total_len.to_string());
                 stats.insert(format!("{}_min_len", name), min_len.to_string());
                 stats.insert(format!("{}_max_len", name), max_len.to_string());
+                stats.insert(format!("{}_len", name), data.len().to_string());
+            }
+            ColumnData::Bool(data) => {
+                let true_count: usize = data.iter().filter(|&&b| b).count();
+                let false_count = data.len() - true_count;
+                stats.insert(format!("{}_true_count", name), true_count.to_string());
+                stats.insert(format!("{}_false_count", name), false_count.to_string());
                 stats.insert(format!("{}_len", name), data.len().to_string());
             }
         }
@@ -564,6 +574,13 @@ fn calculate_comprehensive_metrics(table: &Table) -> HashMap<String, f64> {
                     let max_len = data.iter().map(|s| s.len()).max().unwrap();
                     metrics.insert(format!("{}_min_length", name), min_len as f64);
                     metrics.insert(format!("{}_max_length", name), max_len as f64);
+                }
+            }
+            ColumnData::Bool(data) => {
+                if !data.is_empty() {
+                    let true_count = data.iter().filter(|&&b| b).count();
+                    let true_ratio = true_count as f64 / data.len() as f64;
+                    metrics.insert(format!("{}_true_ratio", name), true_ratio);
                 }
             }
         }

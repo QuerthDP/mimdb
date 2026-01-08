@@ -33,6 +33,7 @@ pub mod serialization;
 pub enum ColumnType {
     Int64,
     Varchar,
+    Bool,
 }
 
 /// In-memory column data representation optimized for CPU processing
@@ -40,6 +41,7 @@ pub enum ColumnType {
 pub enum ColumnData {
     Int64(Vec<i64>),
     Varchar(Vec<String>),
+    Bool(Vec<bool>),
 }
 
 impl ColumnData {
@@ -47,6 +49,7 @@ impl ColumnData {
         match self {
             ColumnData::Int64(data) => data.len(),
             ColumnData::Varchar(data) => data.len(),
+            ColumnData::Bool(data) => data.len(),
         }
     }
 
@@ -54,6 +57,7 @@ impl ColumnData {
         match self {
             ColumnData::Int64(data) => data.is_empty(),
             ColumnData::Varchar(data) => data.is_empty(),
+            ColumnData::Bool(data) => data.is_empty(),
         }
     }
 
@@ -61,6 +65,7 @@ impl ColumnData {
         match self {
             ColumnData::Int64(_) => ColumnType::Int64,
             ColumnData::Varchar(_) => ColumnType::Varchar,
+            ColumnData::Bool(_) => ColumnType::Bool,
         }
     }
 }

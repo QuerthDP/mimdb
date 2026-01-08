@@ -372,6 +372,7 @@ impl QueryExecutor {
             .map(|col| match col.column_type {
                 ColumnType::Int64 => ColumnData::Int64(Vec::new()),
                 ColumnType::Varchar => ColumnData::Varchar(Vec::new()),
+                ColumnType::Bool => ColumnData::Bool(Vec::new()),
             })
             .collect();
 
@@ -416,6 +417,20 @@ impl QueryExecutor {
                     ColumnData::Varchar(vec) => {
                         vec.push(value.to_string());
                     }
+                    ColumnData::Bool(vec) => {
+                        let trimmed = value.trim().to_lowercase();
+                        let parsed = match trimmed.as_str() {
+                            "true" | "1" | "yes" | "t" | "y" => true,
+                            "false" | "0" | "no" | "f" | "n" | "" => false,
+                            _ => anyhow::bail!(
+                                "Row {}, column '{}': failed to parse '{}' as BOOL",
+                                row_num,
+                                col_meta.name,
+                                value
+                            ),
+                        };
+                        vec.push(parsed);
+                    }
                 }
             }
         }
@@ -453,6 +468,7 @@ impl QueryExecutor {
             let initial_data = match col.column_type {
                 ColumnType::Int64 => ColumnData::Int64(Vec::new()),
                 ColumnType::Varchar => ColumnData::Varchar(Vec::new()),
+                ColumnType::Bool => ColumnData::Bool(Vec::new()),
             };
             merged_columns.insert(col.name.clone(), initial_data);
         }
@@ -469,6 +485,9 @@ impl QueryExecutor {
                             dest.extend(src);
                         }
                         (ColumnData::Varchar(dest), ColumnData::Varchar(src)) => {
+                            dest.extend(src);
+                        }
+                        (ColumnData::Bool(dest), ColumnData::Bool(src)) => {
                             dest.extend(src);
                         }
                         _ => {}
@@ -544,6 +563,9 @@ impl QueryExecutor {
                                 vec.iter().take(limit as usize).cloned().collect(),
                             ),
                             ResultColumn::Varchar(vec) => ResultColumn::Varchar(
+                                vec.iter().take(limit as usize).cloned().collect(),
+                            ),
+                            ResultColumn::Bool(vec) => ResultColumn::Bool(
                                 vec.iter().take(limit as usize).cloned().collect(),
                             ),
                         })

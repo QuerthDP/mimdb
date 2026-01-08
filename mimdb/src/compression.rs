@@ -177,6 +177,74 @@ pub(crate) fn decompress_varchar_column(
     Ok(result)
 }
 
+/// Compress bool column using bit packing and LZ4
+///
+/// ## Compression Process:
+/// 1. **Bit Packing**: 8 boolean values are packed into a single byte
+/// 2. **LZ4 Compression**: Fast compression with size prepending
+///
+/// This approach is memory-efficient for boolean data.
+pub(crate) fn compress_bool_column(data: &[bool]) -> Result<Vec<u8>> {
+    if data.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Pack booleans into bytes (8 bools per byte)
+    let num_bytes = data.len().div_ceil(8);
+    let mut packed = Vec::with_capacity(num_bytes);
+
+    for chunk in data.chunks(8) {
+        let mut byte = 0u8;
+        for (i, &b) in chunk.iter().enumerate() {
+            if b {
+                byte |= 1 << i;
+            }
+        }
+        packed.push(byte);
+    }
+
+    // Compress with LZ4 and prepend size
+    let compressed = lz4_flex::compress_prepend_size(&packed);
+    Ok(compressed)
+}
+
+/// Decompress bool column by reversing the compression process
+///
+/// ## Decompression Process:
+/// 1. **LZ4 Decompression**: Decompress the data stream
+/// 2. **Bit Unpacking**: Extract boolean values from packed bytes
+///
+/// The `row_count` parameter ensures we read exactly the expected number of booleans.
+pub(crate) fn decompress_bool_column(
+    compressed_data: &[u8],
+    row_count: usize,
+) -> Result<Vec<bool>> {
+    if compressed_data.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Decompress with LZ4
+    let decompressed = lz4_flex::decompress_size_prepended(compressed_data)
+        .map_err(|e| anyhow::anyhow!("LZ4 decompression error: {}", e))?;
+
+    // Unpack booleans from bytes
+    let mut result = Vec::with_capacity(row_count);
+
+    for &byte in decompressed.iter() {
+        for bit_idx in 0..8 {
+            if result.len() >= row_count {
+                break;
+            }
+            result.push((byte >> bit_idx) & 1 == 1);
+        }
+        if result.len() >= row_count {
+            break;
+        }
+    }
+
+    Ok(result)
+}
+
 /// Variable Length Encoding for signed integers using zigzag encoding
 ///
 /// Converts signed integers to variable-length byte sequences where smaller absolute

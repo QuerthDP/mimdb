@@ -23,6 +23,7 @@ use serde::Serialize;
 pub enum LogicalColumnType {
     Int64,
     Varchar,
+    Bool,
 }
 
 impl From<crate::ColumnType> for LogicalColumnType {
@@ -30,6 +31,7 @@ impl From<crate::ColumnType> for LogicalColumnType {
         match ct {
             crate::ColumnType::Int64 => LogicalColumnType::Int64,
             crate::ColumnType::Varchar => LogicalColumnType::Varchar,
+            crate::ColumnType::Bool => LogicalColumnType::Bool,
         }
     }
 }
@@ -39,6 +41,7 @@ impl From<LogicalColumnType> for crate::ColumnType {
         match lct {
             LogicalColumnType::Int64 => crate::ColumnType::Int64,
             LogicalColumnType::Varchar => crate::ColumnType::Varchar,
+            LogicalColumnType::Bool => crate::ColumnType::Bool,
         }
     }
 }
@@ -284,6 +287,7 @@ pub struct GetQueryResultRequest {
 #[serde(untagged)]
 pub enum ResultColumn {
     Int64(Vec<i64>),
+    Bool(Vec<bool>),
     Varchar(Vec<String>),
 }
 

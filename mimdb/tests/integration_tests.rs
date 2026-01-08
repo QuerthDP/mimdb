@@ -410,6 +410,11 @@ fn calculate_table_metrics(table: &Table) -> TableMetrics {
                 let total_len: usize = data.iter().map(|s| s.len()).sum();
                 string_lengths.insert(name.clone(), total_len);
             }
+            ColumnData::Bool(data) => {
+                // For bool columns, we'll use the count of true values as the sum
+                let true_count = data.iter().filter(|&&b| b).count() as i64;
+                int_sums.insert(name.clone(), true_count);
+            }
         }
     }
 

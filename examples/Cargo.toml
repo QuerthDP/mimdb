@@ -17,6 +17,10 @@ path = "data_analysis.rs"
 name = "batch_processing"
 path = "batch_processing.rs"
 
+[[example]]
+name = "boolean_example"
+path = "boolean_example.rs"
+
 [dependencies]
 mimdb = { path = "../mimdb" }
 anyhow = "1.0"

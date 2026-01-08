@@ -51,8 +51,10 @@
 use crate::ColumnData;
 use crate::ColumnType;
 use crate::Table;
+use crate::compression::compress_bool_column;
 use crate::compression::compress_int64_column;
 use crate::compression::compress_varchar_column;
+use crate::compression::decompress_bool_column;
 use crate::compression::decompress_int64_column;
 use crate::compression::decompress_varchar_column;
 use anyhow::Result;
@@ -170,6 +172,7 @@ impl Table {
                 let compressed = match column_data {
                     ColumnData::Int64(data) => compress_int64_column(data)?,
                     ColumnData::Varchar(data) => compress_varchar_column(data)?,
+                    ColumnData::Bool(data) => compress_bool_column(data)?,
                 };
 
                 let uncompressed_size = match column_data {
@@ -177,6 +180,7 @@ impl Table {
                     ColumnData::Varchar(data) => {
                         data.iter().map(|s| s.len()).sum::<usize>() + data.len() * 4
                     }
+                    ColumnData::Bool(data) => data.len().div_ceil(8), // Bit-packed size
                 };
 
                 let compressed_size = compressed.len();
@@ -205,6 +209,10 @@ impl Table {
                             let batch_slice = &data[batch_start..batch_end];
                             compress_varchar_column(batch_slice)?
                         }
+                        ColumnData::Bool(data) => {
+                            let batch_slice = &data[batch_start..batch_end];
+                            compress_bool_column(batch_slice)?
+                        }
                     };
 
                     let batch_uncompressed_size = match column_data {
@@ -216,6 +224,7 @@ impl Table {
                                 .sum::<usize>()
                                 + batch_row_count * 4
                         }
+                        ColumnData::Bool(_) => batch_row_count.div_ceil(8), // Bit-packed size
                     };
 
                     let batch_compressed_size = batch_compressed.len();
@@ -341,6 +350,20 @@ impl Table {
                         data.append(&mut batch_data);
                     }
                     ColumnData::Varchar(data)
+                }
+                ColumnType::Bool => {
+                    let mut data = Vec::with_capacity(column_meta.total_row_count);
+
+                    // Read and decompress each batch
+                    for batch_meta in &column_meta.batches {
+                        let mut batch_compressed = vec![0u8; batch_meta.compressed_size];
+                        reader.read_exact(&mut batch_compressed)?;
+
+                        let mut batch_data =
+                            decompress_bool_column(&batch_compressed, batch_meta.row_count)?;
+                        data.append(&mut batch_data);
+                    }
+                    ColumnData::Bool(data)
                 }
             };
 

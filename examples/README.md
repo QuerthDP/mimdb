@@ -7,6 +7,7 @@ The library includes three examples demonstrating various features and capabilit
 1. **`simple_usage.rs`** - Comprehensive demonstration showing all library features including table creation, serialization, deserialization, and data integrity verification
 2. **`data_analysis.rs`** - Advanced analytics example demonstrating statistical analysis and character analysis capabilities
 3. **`batch_processing.rs`** - Demonstrates memory-efficient processing of large datasets (10M+ rows) using configurable batch sizes
+4. **`boolean_example.rs`** - Shows how to work with boolean data type, including creation, serialization, deserialization, and verification of boolean columns
 
 ## Simple Usage Example
 
@@ -36,6 +37,15 @@ The `batch_processing.rs` example demonstrates handling large datasets and shows
 5. File size analysis and compression effectiveness on large datasets
 6. Data integrity verification across all batch configurations
 
+## Boolean Data Type Example
+
+The `boolean_example.rs` example demonstrates the boolean data type support and shows:
+1. Creating tables with boolean columns alongside other data types
+2. Practical use cases for boolean fields (flags, status indicators)
+3. Serialization and deserialization of boolean data
+4. Data integrity verification for boolean columns
+5. Analyzing boolean column statistics (true/false counts)
+
 ## Running Examples
 
 ```bash
@@ -47,6 +57,9 @@ cargo run --example data_analysis
 
 # Run batch processing example
 cargo run --example batch_processing
+
+# Run boolean data type example
+cargo run --example boolean_example
 ```
 
 ## Example Data
