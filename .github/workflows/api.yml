@@ -17,11 +17,11 @@ jobs:
 
     - name: Compare specs
       run: |
-        if ! diff -q api/dbmsInterface.yaml /tmp/upstream_spec.yaml > /dev/null 2>&1; then
+        if ! diff -w -q api/dbmsInterface.yaml /tmp/upstream_spec.yaml > /dev/null 2>&1; then
           echo "❌ Local spec differs from upstream!"
           echo ""
           echo "Differences:"
-          diff --color=always api/dbmsInterface.yaml /tmp/upstream_spec.yaml || true
+          diff -w --color=always api/dbmsInterface.yaml /tmp/upstream_spec.yaml || true
           echo ""
           echo "Please sync your api/dbmsInterface.yaml with:"
           echo "https://github.com/smogork/ISBD-MIMUW/blob/main/interface/dbmsInterface.yaml"
