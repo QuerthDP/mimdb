@@ -109,7 +109,131 @@ pub struct CopyQuery {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectQuery {
+    pub column_clauses: Vec<ColumnExpression>,
+    #[serde(default)]
+    pub where_clause: Option<ColumnExpression>,
+    #[serde(default)]
+    pub order_by_clause: Option<Vec<OrderByExpression>>,
+    #[serde(default)]
+    pub limit_clause: Option<LimitExpression>,
+}
+
+// ============================================================================
+// Column Expressions
+// ============================================================================
+
+/// Column expression - describes a single column in a SELECT query
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ColumnExpression {
+    BinaryOperation(ColumnarBinaryOperation),
+    UnaryOperation(ColumnarUnaryOperation),
+    Function(Function),
+    ColumnReference(ColumnReferenceExpression),
+    Literal(Literal),
+}
+
+/// Reference to a column in a table
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnReferenceExpression {
     pub table_name: String,
+    pub column_name: String,
+}
+
+/// Literal value
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Literal {
+    pub value: LiteralValue,
+}
+
+/// The actual value of a literal
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum LiteralValue {
+    Int64(i64),
+    Bool(bool),
+    Varchar(String),
+}
+
+/// Function types supported in column expressions
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FunctionName {
+    Strlen,
+    Concat,
+    Upper,
+    Lower,
+}
+
+/// Function call in a column expression
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Function {
+    pub function_name: FunctionName,
+    pub arguments: Vec<ColumnExpression>,
+}
+
+/// Binary operators for column expressions
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum BinaryOperator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    And,
+    Or,
+    Equal,
+    NotEqual,
+    LessThan,
+    LessEqual,
+    GreaterThan,
+    GreaterEqual,
+}
+
+/// Binary operation in a column expression
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnarBinaryOperation {
+    pub operator: BinaryOperator,
+    pub left_operand: Box<ColumnExpression>,
+    pub right_operand: Box<ColumnExpression>,
+}
+
+/// Unary operators for column expressions
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum UnaryOperator {
+    Not,
+    Minus,
+}
+
+/// Unary operation in a column expression
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnarUnaryOperation {
+    pub operator: UnaryOperator,
+    pub operand: Box<ColumnExpression>,
+}
+
+/// ORDER BY expression
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrderByExpression {
+    pub column_index: usize,
+    #[serde(default = "default_ascending")]
+    pub ascending: bool,
+}
+
+fn default_ascending() -> bool {
+    true
+}
+
+/// LIMIT expression
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LimitExpression {
+    pub limit: i32,
 }
 
 /// Query definition - either COPY or SELECT
