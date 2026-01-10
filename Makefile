@@ -1,7 +1,7 @@
 # MIMDB Makefile
 # Build and run commands for the MIMDB database system
 
-.PHONY: all build release test clean docker docker-run server help
+.PHONY: all build release test clean docker docker-run server help ci
 
 # Default target
 all: build
@@ -51,7 +51,7 @@ run:
 
 # Format code
 fmt:
-	cargo fmt  --all
+	cargo fmt --all
 
 # Check code
 check:
@@ -60,6 +60,9 @@ check:
 # Run clippy
 clippy:
 	cargo clippy --all-targets --workspace -- -Dwarnings
+
+# Run CI checks
+ci: fmt check clippy test
 
 # Help target
 help:
@@ -78,4 +81,5 @@ help:
 	@echo "  fmt         - Format code"
 	@echo "  check       - Check code"
 	@echo "  clippy      - Run clippy"
+	@echo "  ci          - Run CI checks"
 	@echo "  help        - Show this help message"
