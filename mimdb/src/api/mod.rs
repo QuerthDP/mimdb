@@ -11,6 +11,7 @@
 //! implementing the interface defined in dbmsInterface.yaml.
 
 pub mod executor;
+pub mod expression;
 pub mod handlers;
 pub mod models;
 pub mod swagger;
