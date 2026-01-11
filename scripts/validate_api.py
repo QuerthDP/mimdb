@@ -123,6 +123,9 @@ def validate_response_schema(response_data: Any, schema: dict, spec: dict, path:
             properties = schema.get("properties", {})
             for prop_name, prop_schema in properties.items():
                 if prop_name in response_data:
+                    # Skip validation for optional fields that are null
+                    if response_data[prop_name] is None and prop_name not in required:
+                        continue
                     errors.extend(validate_response_schema(
                         response_data[prop_name],
                         prop_schema,
@@ -225,8 +228,10 @@ class APIValidator:
                     if field not in qdef:
                         self.log("FAIL", f"COPY queryDefinition missing required: '{field}'")
             elif query_type == "SELECT":
-                if "tableName" not in qdef:
-                    self.log("FAIL", f"SELECT queryDefinition missing: 'tableName'")
+                if "columnClauses" not in qdef:
+                    self.log("FAIL", f"SELECT queryDefinition missing required: 'columnClauses'")
+                elif not isinstance(qdef["columnClauses"], list):
+                    self.log("FAIL", f"SELECT queryDefinition columnClauses must be an array")
 
     def get_request_schema(self, path: str, method: str) -> dict | None:
         """Get the expected request body schema from OpenAPI spec."""
@@ -426,7 +431,10 @@ class APIValidator:
         print(f"\n{YELLOW}[5/8] SELECT Query{RESET}")
         select_query = {
             "queryDefinition": {
-                "tableName": "compliance_test"
+                "columnClauses": [
+                    {"tableName": "compliance_test", "columnName": "id"},
+                    {"tableName": "compliance_test", "columnName": "name"}
+                ]
             }
         }
         result = self.validate_endpoint("POST", "/query", 200, json_data=select_query, description="- submit SELECT query")
@@ -439,6 +447,145 @@ class APIValidator:
             result = self.validate_endpoint("GET", f"/query/{self.test_select_query_id}", 200, description="- get SELECT query status")
             if result and isinstance(result, dict):
                 self._validate_query_required_fields(result, "SELECT")
+
+        # Test: Advanced SELECT Query Features (API v2.0.0)
+        print(f"\n{YELLOW}[5b/8] Advanced SELECT Query Features{RESET}")
+
+        # Test SELECT with LIMIT clause
+        select_with_limit = {
+            "queryDefinition": {
+                "columnClauses": [
+                    {"tableName": "compliance_test", "columnName": "id"},
+                    {"tableName": "compliance_test", "columnName": "name"}
+                ],
+                "limitClause": {"limit": 2}
+            }
+        }
+        self.validate_endpoint("POST", "/query", 200, json_data=select_with_limit, description="- SELECT with LIMIT")
+
+        # Test SELECT with ORDER BY clause (ascending)
+        select_with_order = {
+            "queryDefinition": {
+                "columnClauses": [
+                    {"tableName": "compliance_test", "columnName": "id"},
+                    {"tableName": "compliance_test", "columnName": "name"}
+                ],
+                "orderByClause": [{"columnIndex": 0, "ascending": True}]
+            }
+        }
+        self.validate_endpoint("POST", "/query", 200, json_data=select_with_order, description="- SELECT with ORDER BY ASC")
+
+        # Test SELECT with ORDER BY clause (descending)
+        select_with_order_desc = {
+            "queryDefinition": {
+                "columnClauses": [
+                    {"tableName": "compliance_test", "columnName": "id"},
+                    {"tableName": "compliance_test", "columnName": "name"}
+                ],
+                "orderByClause": [{"columnIndex": 0, "ascending": False}]
+            }
+        }
+        self.validate_endpoint("POST", "/query", 200, json_data=select_with_order_desc, description="- SELECT with ORDER BY DESC")
+
+        # Test SELECT with WHERE clause (comparison)
+        select_with_where = {
+            "queryDefinition": {
+                "columnClauses": [
+                    {"tableName": "compliance_test", "columnName": "id"},
+                    {"tableName": "compliance_test", "columnName": "name"}
+                ],
+                "whereClause": {
+                    "operator": "GREATER_THAN",
+                    "leftOperand": {"tableName": "compliance_test", "columnName": "id"},
+                    "rightOperand": {"value": 1}
+                }
+            }
+        }
+        self.validate_endpoint("POST", "/query", 200, json_data=select_with_where, description="- SELECT with WHERE (comparison)")
+
+        # Test SELECT with literal value in column clause
+        select_with_literal = {
+            "queryDefinition": {
+                "columnClauses": [
+                    {"tableName": "compliance_test", "columnName": "id"},
+                    {"value": "constant_value"}
+                ]
+            }
+        }
+        self.validate_endpoint("POST", "/query", 200, json_data=select_with_literal, description="- SELECT with literal value")
+
+        # Test SELECT with string function (UPPER)
+        select_with_function = {
+            "queryDefinition": {
+                "columnClauses": [
+                    {"tableName": "compliance_test", "columnName": "id"},
+                    {
+                        "functionName": "UPPER",
+                        "arguments": [{"tableName": "compliance_test", "columnName": "name"}]
+                    }
+                ]
+            }
+        }
+        self.validate_endpoint("POST", "/query", 200, json_data=select_with_function, description="- SELECT with UPPER function")
+
+        # Test SELECT with arithmetic operation
+        select_with_arithmetic = {
+            "queryDefinition": {
+                "columnClauses": [
+                    {
+                        "operator": "MULTIPLY",
+                        "leftOperand": {"tableName": "compliance_test", "columnName": "id"},
+                        "rightOperand": {"value": 10}
+                    }
+                ]
+            }
+        }
+        self.validate_endpoint("POST", "/query", 200, json_data=select_with_arithmetic, description="- SELECT with arithmetic (MULTIPLY)")
+
+        # Test SELECT with combined clauses (WHERE + ORDER BY + LIMIT)
+        select_combined = {
+            "queryDefinition": {
+                "columnClauses": [
+                    {"tableName": "compliance_test", "columnName": "id"},
+                    {"tableName": "compliance_test", "columnName": "name"}
+                ],
+                "whereClause": {
+                    "operator": "GREATER_EQUAL",
+                    "leftOperand": {"tableName": "compliance_test", "columnName": "id"},
+                    "rightOperand": {"value": 1}
+                },
+                "orderByClause": [{"columnIndex": 0, "ascending": False}],
+                "limitClause": {"limit": 5}
+            }
+        }
+        self.validate_endpoint("POST", "/query", 200, json_data=select_combined, description="- SELECT with WHERE + ORDER BY + LIMIT")
+
+        # Test SELECT with STRLEN function
+        select_strlen = {
+            "queryDefinition": {
+                "columnClauses": [
+                    {"tableName": "compliance_test", "columnName": "name"},
+                    {
+                        "functionName": "STRLEN",
+                        "arguments": [{"tableName": "compliance_test", "columnName": "name"}]
+                    }
+                ]
+            }
+        }
+        self.validate_endpoint("POST", "/query", 200, json_data=select_strlen, description="- SELECT with STRLEN function")
+
+        # Test SELECT with unary minus
+        select_unary_minus = {
+            "queryDefinition": {
+                "columnClauses": [
+                    {
+                        "operator": "MINUS",
+                        "operand": {"tableName": "compliance_test", "columnName": "id"}
+                    }
+                ]
+            }
+        }
+        self.validate_endpoint("POST", "/query", 200, json_data=select_unary_minus, description="- SELECT with unary MINUS")
 
         # Test 10: Get Query Result
         print(f"\n{YELLOW}[6/8] Query Results{RESET}")
