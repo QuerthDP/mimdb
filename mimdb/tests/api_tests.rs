@@ -252,7 +252,10 @@ async fn test_select_query_on_empty_table() {
     // Execute SELECT query
     let query = serde_json::json!({
         "queryDefinition": {
-            "tableName": "empty_table"
+            "columnClauses": [
+                {"tableName": "empty_table", "columnName": "id"},
+                {"tableName": "empty_table", "columnName": "value"}
+            ]
         }
     });
 
@@ -280,7 +283,9 @@ async fn test_select_nonexistent_table() {
 
     let query = serde_json::json!({
         "queryDefinition": {
-            "tableName": "nonexistent_table"
+            "columnClauses": [
+                {"tableName": "nonexistent_table", "columnName": "id"}
+            ]
         }
     });
 
@@ -333,7 +338,11 @@ async fn test_copy_and_select_full_workflow() {
     // 5. Execute SELECT query
     let select_query = serde_json::json!({
         "queryDefinition": {
-            "tableName": "employees"
+            "columnClauses": [
+                {"tableName": "employees", "columnName": "id"},
+                {"tableName": "employees", "columnName": "name"},
+                {"tableName": "employees", "columnName": "salary"}
+            ]
         }
     });
 
@@ -391,7 +400,10 @@ async fn test_copy_with_header() {
     // Execute SELECT
     let select_query = serde_json::json!({
         "queryDefinition": {
-            "tableName": "products"
+            "columnClauses": [
+                {"tableName": "products", "columnName": "id"},
+                {"tableName": "products", "columnName": "name"}
+            ]
         }
     });
 
@@ -475,7 +487,9 @@ async fn test_result_with_row_limit() {
     // Execute SELECT
     let select_query = serde_json::json!({
         "queryDefinition": {
-            "tableName": "numbers"
+            "columnClauses": [
+                {"tableName": "numbers", "columnName": "value"}
+            ]
         }
     });
 
@@ -551,7 +565,10 @@ async fn test_persistence_across_restarts() {
         // Data should be queryable
         let select_query = serde_json::json!({
             "queryDefinition": {
-                "tableName": "persistent_table"
+                "columnClauses": [
+                    {"tableName": "persistent_table", "columnName": "id"},
+                    {"tableName": "persistent_table", "columnName": "data"}
+                ]
             }
         });
 
@@ -670,7 +687,10 @@ async fn test_multiple_copy_operations() {
     // SELECT should return all 5 rows
     let select_query = serde_json::json!({
         "queryDefinition": {
-            "tableName": "logs"
+            "columnClauses": [
+                {"tableName": "logs", "columnName": "id"},
+                {"tableName": "logs", "columnName": "message"}
+            ]
         }
     });
 
@@ -704,7 +724,11 @@ async fn test_query_status_completed() {
 
     // Execute SELECT
     let select_query = serde_json::json!({
-        "queryDefinition": {"tableName": "test"}
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "test", "columnName": "id"}
+            ]
+        }
     });
 
     let resp = server.post("/query").json(&select_query).await;
@@ -736,7 +760,11 @@ async fn test_queries_list_after_operations() {
     let mut query_ids = Vec::new();
     for _ in 0..3 {
         let select_query = serde_json::json!({
-            "queryDefinition": {"tableName": "test"}
+            "queryDefinition": {
+                "columnClauses": [
+                    {"tableName": "test", "columnName": "id"}
+                ]
+            }
         });
 
         let resp = server.post("/query").json(&select_query).await;
@@ -798,7 +826,12 @@ async fn test_flush_result() {
 
     // 3. Execute SELECT query
     let select_query = serde_json::json!({
-        "queryDefinition": {"tableName": "test_flush"}
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "test_flush", "columnName": "id"},
+                {"tableName": "test_flush", "columnName": "value"}
+            ]
+        }
     });
 
     let resp = server.post("/query").json(&select_query).await;
@@ -847,4 +880,112 @@ async fn test_flush_result() {
     assert_eq!(query["status"], "COMPLETED");
     // isResultAvailable should now be false since we flushed
     assert_eq!(query["isResultAvailable"], false);
+}
+
+#[tokio::test]
+async fn test_select_with_multiple_tables() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // 1. Create first table
+    let table1_schema = serde_json::json!({
+        "name": "users",
+        "columns": [
+            {"name": "id", "type": "INT64"},
+            {"name": "name", "type": "VARCHAR"}
+        ]
+    });
+
+    let resp = server.put("/table").json(&table1_schema).await;
+    resp.assert_status_success();
+
+    // 2. Create second table
+    let table2_schema = serde_json::json!({
+        "name": "orders",
+        "columns": [
+            {"name": "id", "type": "INT64"},
+            {"name": "user_id", "type": "INT64"}
+        ]
+    });
+
+    let resp = server.put("/table").json(&table2_schema).await;
+    resp.assert_status_success();
+
+    // 3. Load data into first table
+    let csv_path1 = temp_dir.path().join("users.csv");
+    std::fs::write(&csv_path1, "1,Alice\n2,Bob\n").unwrap();
+
+    let copy_query1 = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path1.to_str().unwrap(),
+            "destinationTableName": "users",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query1).await;
+    resp.assert_status_success();
+
+    let query_id1: String = resp.json();
+    wait_for_query_completion(&server, &query_id1).await;
+
+    // 4. Load data into second table
+    let csv_path2 = temp_dir.path().join("orders.csv");
+    std::fs::write(&csv_path2, "1,1\n2,1\n3,2\n").unwrap();
+
+    let copy_query2 = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path2.to_str().unwrap(),
+            "destinationTableName": "orders",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query2).await;
+    resp.assert_status_success();
+
+    let query_id2: String = resp.json();
+    wait_for_query_completion(&server, &query_id2).await;
+
+    // 5. Try to SELECT from both tables (this should fail if joins are not supported)
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "users", "columnName": "id"},
+                {"tableName": "users", "columnName": "name"},
+                {"tableName": "orders", "columnName": "id"},
+                {"tableName": "orders", "columnName": "user_id"}
+            ]
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+
+    // Check if the query was submitted successfully
+    if resp.status_code() == 200 {
+        let query_id: String = resp.json();
+        wait_for_query_completion(&server, &query_id).await;
+
+        // Check if the query failed
+        let resp = server.get(&format!("/query/{}", query_id)).await;
+        let query: serde_json::Value = resp.json();
+
+        // Expect the query to fail since multi-table queries are not supported
+        assert_eq!(
+            query["status"], "FAILED",
+            "Query should fail when referencing multiple tables"
+        );
+
+        // Try to get the error details
+        let resp = server.get(&format!("/error/{}", query_id)).await;
+        resp.assert_status_success();
+
+        let error: serde_json::Value = resp.json();
+        println!("Error details: {:?}", error);
+    } else {
+        // If the query submission itself failed, that's also a valid way to reject multi-table queries
+        resp.assert_status_bad_request();
+        let error: serde_json::Value = resp.json();
+        println!("Query submission failed: {:?}", error);
+    }
 }
