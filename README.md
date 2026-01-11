@@ -8,7 +8,7 @@ MIMDB is a columnar analytical database system implemented in Rust. It provides 
 - **REST API**: Full HTTP API for database operations (tables, queries, results)
 - **Metastore**: Persistent metadata storage surviving restarts
 - **COPY operations**: Load CSV files into tables
-- **SELECT operations**: Query all rows from a table
+- **SELECT operations**: Extended SELECT with column expressions, WHERE, ORDER BY, and LIMIT
 - **Atomic operations**: Data changes are visible only after completion
 
 ### File Format
@@ -169,12 +169,73 @@ curl -X POST http://localhost:3000/query \
 ```
 
 #### Execute SELECT query
+Column expressions, filtering, sorting, and limiting are supported.
+
+Examples:
+
+1) Select specific columns with a filter (WHERE) and limit:
 ```bash
 curl -X POST http://localhost:3000/query \
   -H "Content-Type: application/json" \
   -d '{
     "queryDefinition": {
-      "tableName": "users"
+      "columnClauses": [
+        {"tableName": "users", "columnName": "id"},
+        {"tableName": "users", "columnName": "name"}
+      ],
+      "whereClause": {
+        "operator": "GREATER_THAN",
+        "leftOperand": {"tableName": "users", "columnName": "id"},
+        "rightOperand": {"value": 5}
+      },
+      "limitClause": {"limit": 10}
+    }
+  }'
+```
+
+2) Use functions and ordering (ORDER BY):
+```bash
+curl -X POST http://localhost:3000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queryDefinition": {
+      "columnClauses": [
+        {"functionName": "UPPER", "arguments": [{"tableName": "users", "columnName": "name"}]},
+        {"functionName": "STRLEN", "arguments": [{"tableName": "users", "columnName": "name"}]}
+      ],
+      "orderByClause": [
+        {"columnIndex": 1, "ascending": false}
+      ]
+    }
+  }'
+```
+
+3) Complex expressions with operators:
+```bash
+curl -X POST http://localhost:3000/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queryDefinition": {
+      "columnClauses": [
+        {
+          "operator": "ADD",
+          "leftOperand": {"tableName": "employees", "columnName": "salary"},
+          "rightOperand": {"value": 1000}
+        }
+      ],
+      "whereClause": {
+        "operator": "AND",
+        "leftOperand": {
+          "operator": "GREATER_EQUAL",
+          "leftOperand": {"tableName": "employees", "columnName": "salary"},
+          "rightOperand": {"value": 50000}
+        },
+        "rightOperand": {
+          "operator": "LESS_EQUAL",
+          "leftOperand": {"functionName": "STRLEN", "arguments": [{"tableName": "employees", "columnName": "name"}]},
+          "rightOperand": {"value": 16}
+        }
+      }
     }
   }'
 ```
@@ -253,7 +314,11 @@ SELECT_QUERY_ID=$(curl -s -X POST http://localhost:3000/query \
   -H "Content-Type: application/json" \
   -d '{
     "queryDefinition": {
-      "tableName": "employees"
+      "columnClauses": [
+        {"tableName": "employees", "columnName": "id"},
+        {"tableName": "employees", "columnName": "name"},
+        {"tableName": "employees", "columnName": "salary"}
+      ]
     }
   }' | tr -d '"')
 
@@ -349,13 +414,28 @@ cargo build --bin loader
 
 ## Examples
 
-The library includes three examples in the `examples/` directory:
+The library includes multiple examples in the `examples/` directory:
 
-1. **`simple_usage.rs`** - Comprehensive demonstration showing all library features including table creation, serialization, deserialization, and data integrity verification
+1. **`simple_usage.rs`** - Comprehensive demonstration showing core library features including table creation, serialization, deserialization, and data integrity verification
 2. **`data_analysis.rs`** - Advanced analytics example demonstrating statistical analysis and character analysis capabilities
 3. **`batch_processing.rs`** - Demonstrates memory-efficient processing of large datasets (10M+ rows) using configurable batch sizes
+4. **`boolean_example.rs`** - Shows the boolean data type and common usage patterns
 
 See the [examples README](examples/README.md) for detailed information about each example.
+
+## Query Language
+
+MIMDB implements an extended SELECT query language per `api/dbmsInterface.yaml`:
+
+- **Column Expressions**: column references, literals, functions, binary and unary operators
+- **Functions**: `STRLEN`, `CONCAT`, `UPPER`, `LOWER`
+- **Binary Operators**: `ADD`, `SUBTRACT`, `MULTIPLY`, `DIVIDE`, `AND`, `OR`, `EQUAL`, `NOT_EQUAL`, `LESS_THAN`, `LESS_EQUAL`, `GREATER_THAN`, `GREATER_EQUAL`
+- **Unary Operators**: `NOT`, `MINUS`
+- **WHERE**: filtering requires boolean-evaluating expressions
+- **ORDER BY**: sort by indices of result columns (`columnIndex`) with `ascending` or `descending` order
+- **LIMIT**: restrict number of rows returned
+
+Interactive usage is available via the CLI; see `mimdb/bin/README.md`.
 
 ## License
 

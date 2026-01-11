@@ -2,6 +2,30 @@
 
 This directory contains the executable binaries for the MIMDB database system.
 
+## CLI
+
+Interactive command-line client for submitting queries to a running server.
+
+### Start the CLI
+
+```bash
+cargo run --bin cli -- --host localhost --port 3000
+```
+
+### Commands
+
+- `info` — Show system information
+- `tables` — List tables; `describe <table>` — Show schema
+- `create <table> with <col:type> ...` — Create table (types: `INT64`, `VARCHAR`, `BOOL`)
+- `drop <table>` — Delete table
+- `copy <csv> to <table> [into cols] [with header]` — Load CSV
+- `queries` / `query <id>` — List or inspect query
+- `result <id>` — Fetch results
+- `select <cols> from <table> [where <expr>] [order by <col> [asc|desc], ...] [limit <n>]` — Execute SELECT
+- `raw <json>` — Submit raw JSON query per OpenAPI
+
+Supported expressions: arithmetic `+ - * /`, comparison `= != < <= > >=`, logical `AND OR`, functions `upper(x) lower(x) strlen(x) concat(a,b)`, literals (`123`, `"text"`, `true/false`).
+
 ## Server
 
 The main binary is the MIMDB REST API server, which provides a full HTTP interface for database operations.

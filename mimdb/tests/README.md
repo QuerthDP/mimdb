@@ -126,6 +126,12 @@ The test suite covers:
    - Invalid file formats
    - Corrupted data recovery
 
+7. **Query Language Semantics**
+   - Function evaluation: `STRLEN`, `CONCAT`, `UPPER`, `LOWER`
+   - Operator semantics: arithmetic, logical, and comparison operators
+   - Planning-time validation (type checking for expressions)
+   - Ordering and limiting on result columns
+
 ## Test Data
 
 The test suite includes various data patterns:
