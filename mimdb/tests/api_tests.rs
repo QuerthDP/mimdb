@@ -989,3 +989,733 @@ async fn test_select_with_multiple_tables() {
         println!("Query submission failed: {:?}", error);
     }
 }
+
+// ============================================================================
+// SELECT with WHERE, ORDER BY, LIMIT Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_select_with_where_equals() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "orders",
+        "columns": [
+            {"name": "id", "type": "INT64"},
+            {"name": "status", "type": "VARCHAR"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV with mixed status values
+    let csv_path = temp_dir.path().join("orders.csv");
+    std::fs::write(
+        &csv_path,
+        "1,completed\n2,pending\n3,completed\n4,cancelled\n5,completed\n",
+    )
+    .unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "orders",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with WHERE clause filtering for "completed" status
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "orders", "columnName": "id"},
+                {"tableName": "orders", "columnName": "status"}
+            ],
+            "whereClause": {
+                "operator": "EQUAL",
+                "leftOperand": {"tableName": "orders", "columnName": "status"},
+                "rightOperand": {"value": "completed"}
+            }
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    // Should return 3 rows (id 1, 3, 5 with status "completed")
+    assert_eq!(result[0]["rowCount"], 3);
+}
+
+#[tokio::test]
+async fn test_select_with_where_greater_than() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "employees",
+        "columns": [
+            {"name": "id", "type": "INT64"},
+            {"name": "salary", "type": "INT64"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV with salary data
+    let csv_path = temp_dir.path().join("employees.csv");
+    std::fs::write(&csv_path, "1,50000\n2,75000\n3,60000\n4,100000\n5,55000\n").unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "employees",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with WHERE salary > 60000
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "employees", "columnName": "id"},
+                {"tableName": "employees", "columnName": "salary"}
+            ],
+            "whereClause": {
+                "operator": "GREATER_THAN",
+                "leftOperand": {"tableName": "employees", "columnName": "salary"},
+                "rightOperand": {"value": 60000}
+            }
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    // Should return 2 rows (id 2 with salary 75000, id 4 with salary 100000)
+    assert_eq!(result[0]["rowCount"], 2);
+}
+
+#[tokio::test]
+async fn test_select_with_where_no_matches() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "items",
+        "columns": [
+            {"name": "id", "type": "INT64"},
+            {"name": "category", "type": "VARCHAR"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV
+    let csv_path = temp_dir.path().join("items.csv");
+    std::fs::write(&csv_path, "1,book\n2,pen\n3,book\n").unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "items",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with WHERE category = "laptop" (no matches)
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "items", "columnName": "id"},
+                {"tableName": "items", "columnName": "category"}
+            ],
+            "whereClause": {
+                "operator": "EQUAL",
+                "leftOperand": {"tableName": "items", "columnName": "category"},
+                "rightOperand": {"value": "laptop"}
+            }
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    // Should return 0 rows
+    assert_eq!(result[0]["rowCount"], 0);
+}
+
+#[tokio::test]
+async fn test_select_with_order_by_ascending() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "products",
+        "columns": [
+            {"name": "id", "type": "INT64"},
+            {"name": "price", "type": "INT64"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV with unsorted prices
+    let csv_path = temp_dir.path().join("products.csv");
+    std::fs::write(&csv_path, "1,30\n2,10\n3,50\n4,20\n5,40\n").unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "products",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with ORDER BY price ASC
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "products", "columnName": "id"},
+                {"tableName": "products", "columnName": "price"}
+            ],
+            "orderByClause": [
+                {"columnIndex": 1, "ascending": true}
+            ]
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    assert_eq!(result[0]["rowCount"], 5);
+
+    // Verify order: prices should be 10, 20, 30, 40, 50
+    let prices = result[0]["columns"][1].as_array().unwrap();
+    assert_eq!(prices[0], 10);
+    assert_eq!(prices[1], 20);
+    assert_eq!(prices[2], 30);
+    assert_eq!(prices[3], 40);
+    assert_eq!(prices[4], 50);
+}
+
+#[tokio::test]
+async fn test_select_with_order_by_descending() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "scores",
+        "columns": [
+            {"name": "id", "type": "INT64"},
+            {"name": "score", "type": "INT64"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV
+    let csv_path = temp_dir.path().join("scores.csv");
+    std::fs::write(&csv_path, "1,85\n2,92\n3,78\n4,95\n5,88\n").unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "scores",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with ORDER BY score DESC
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "scores", "columnName": "id"},
+                {"tableName": "scores", "columnName": "score"}
+            ],
+            "orderByClause": [
+                {"columnIndex": 1, "ascending": false}
+            ]
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    assert_eq!(result[0]["rowCount"], 5);
+
+    // Verify order: scores should be 95, 92, 88, 85, 78
+    let scores = result[0]["columns"][1].as_array().unwrap();
+    assert_eq!(scores[0], 95);
+    assert_eq!(scores[1], 92);
+    assert_eq!(scores[2], 88);
+    assert_eq!(scores[3], 85);
+    assert_eq!(scores[4], 78);
+}
+
+#[tokio::test]
+async fn test_select_with_order_by_multiple_columns() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "students",
+        "columns": [
+            {"name": "id", "type": "INT64"},
+            {"name": "grade", "type": "INT64"},
+            {"name": "score", "type": "INT64"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV with students in same grades with different scores
+    let csv_path = temp_dir.path().join("students.csv");
+    std::fs::write(&csv_path, "1,10,85\n2,11,90\n3,10,95\n4,11,80\n5,10,90\n").unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "students",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with ORDER BY grade ASC, score DESC
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "students", "columnName": "id"},
+                {"tableName": "students", "columnName": "grade"},
+                {"tableName": "students", "columnName": "score"}
+            ],
+            "orderByClause": [
+                {"columnIndex": 1, "ascending": true},
+                {"columnIndex": 2, "ascending": false}
+            ]
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    assert_eq!(result[0]["rowCount"], 5);
+
+    // Verify order: grade 10 first (scores 95, 90, 85), then grade 11 (scores 90, 80)
+    let grades = result[0]["columns"][1].as_array().unwrap();
+    let scores = result[0]["columns"][2].as_array().unwrap();
+
+    // Grade 10 students sorted by score DESC
+    assert_eq!(grades[0], 10);
+    assert_eq!(scores[0], 95);
+    assert_eq!(grades[1], 10);
+    assert_eq!(scores[1], 90);
+    assert_eq!(grades[2], 10);
+    assert_eq!(scores[2], 85);
+
+    // Grade 11 students sorted by score DESC
+    assert_eq!(grades[3], 11);
+    assert_eq!(scores[3], 90);
+    assert_eq!(grades[4], 11);
+    assert_eq!(scores[4], 80);
+}
+
+#[tokio::test]
+async fn test_select_with_limit_basic() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "numbers",
+        "columns": [
+            {"name": "value", "type": "INT64"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV with 10 rows
+    let csv_path = temp_dir.path().join("numbers.csv");
+    std::fs::write(&csv_path, "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n").unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "numbers",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with LIMIT 3
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "numbers", "columnName": "value"}
+            ],
+            "limitClause": {"limit": 3}
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    assert_eq!(result[0]["rowCount"], 3);
+}
+
+#[tokio::test]
+async fn test_select_with_limit_zero() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "data",
+        "columns": [
+            {"name": "id", "type": "INT64"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV
+    let csv_path = temp_dir.path().join("data.csv");
+    std::fs::write(&csv_path, "1\n2\n3\n").unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "data",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with LIMIT 0
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "data", "columnName": "id"}
+            ],
+            "limitClause": {"limit": 0}
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    assert_eq!(result[0]["rowCount"], 0);
+}
+
+#[tokio::test]
+async fn test_select_with_limit_exceeds_rows() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "small_table",
+        "columns": [
+            {"name": "id", "type": "INT64"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV with only 3 rows
+    let csv_path = temp_dir.path().join("small.csv");
+    std::fs::write(&csv_path, "1\n2\n3\n").unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "small_table",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with LIMIT 100 (more than available rows)
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "small_table", "columnName": "id"}
+            ],
+            "limitClause": {"limit": 100}
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    // Should return all 3 rows
+    assert_eq!(result[0]["rowCount"], 3);
+}
+
+#[tokio::test]
+async fn test_select_with_where_order_by_limit() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "items",
+        "columns": [
+            {"name": "id", "type": "INT64"},
+            {"name": "category", "type": "VARCHAR"},
+            {"name": "price", "type": "INT64"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV
+    let csv_path = temp_dir.path().join("items.csv");
+    std::fs::write(
+        &csv_path,
+        "1,book,20\n2,pen,5\n3,book,15\n4,pen,8\n5,book,25\n6,pen,10\n7,book,12\n",
+    )
+    .unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "items",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT books with price DESC, LIMIT 2
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "items", "columnName": "id"},
+                {"tableName": "items", "columnName": "price"}
+            ],
+            "whereClause": {
+                "operator": "EQUAL",
+                "leftOperand": {"tableName": "items", "columnName": "category"},
+                "rightOperand": {"value": "book"}
+            },
+            "orderByClause": [
+                {"columnIndex": 1, "ascending": false}
+            ],
+            "limitClause": {"limit": 2}
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    // Should return 2 rows: id 5 (price 25), id 1 (price 20)
+    assert_eq!(result[0]["rowCount"], 2);
+
+    let ids = result[0]["columns"][0].as_array().unwrap();
+    let prices = result[0]["columns"][1].as_array().unwrap();
+    assert_eq!(ids[0], 5);
+    assert_eq!(prices[0], 25);
+    assert_eq!(ids[1], 1);
+    assert_eq!(prices[1], 20);
+}
+
+#[tokio::test]
+async fn test_select_with_where_and_limit_only() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "records",
+        "columns": [
+            {"name": "status", "type": "VARCHAR"},
+            {"name": "value", "type": "INT64"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV
+    let csv_path = temp_dir.path().join("records.csv");
+    std::fs::write(
+        &csv_path,
+        "active,100\ninactive,200\nactive,150\ninactive,250\nactive,200\n",
+    )
+    .unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "records",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT active records with LIMIT 2 (no ORDER BY)
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "records", "columnName": "status"},
+                {"tableName": "records", "columnName": "value"}
+            ],
+            "whereClause": {
+                "operator": "EQUAL",
+                "leftOperand": {"tableName": "records", "columnName": "status"},
+                "rightOperand": {"value": "active"}
+            },
+            "limitClause": {"limit": 2}
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    // Should return 2 rows (first 2 "active" records)
+    assert_eq!(result[0]["rowCount"], 2);
+}

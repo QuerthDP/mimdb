@@ -947,7 +947,11 @@ impl QueryExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::models::BinaryOperator;
     use crate::api::models::ColumnReferenceExpression;
+    use crate::api::models::ColumnarBinaryOperation;
+    use crate::api::models::Literal;
+    use crate::api::models::LiteralValue;
     use crate::metastore::ColumnMetadata;
     use std::io::Write;
     use tempfile::tempdir;
@@ -1632,6 +1636,845 @@ mod tests {
         executor.wait_for_completion(&select_id).await.unwrap();
         let result = executor.get_result(&select_id, None).unwrap().unwrap();
 
+        assert_eq!(result[0].row_count, 2);
+    }
+
+    // ========================================================================
+    // WHERE Clause Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_select_with_where_equals() {
+        let dir = tempdir().unwrap();
+        let metastore = create_persistent_metastore(dir.path());
+
+        let columns = vec![
+            ColumnMetadata {
+                name: "id".to_string(),
+                column_type: ColumnType::Int64,
+            },
+            ColumnMetadata {
+                name: "status".to_string(),
+                column_type: ColumnType::Varchar,
+            },
+        ];
+        metastore
+            .create_table("orders".to_string(), columns)
+            .unwrap();
+
+        // Create CSV with mixed status values
+        let csv_path = dir.path().join("orders.csv");
+        let mut file = std::fs::File::create(&csv_path).unwrap();
+        writeln!(file, "1,completed").unwrap();
+        writeln!(file, "2,pending").unwrap();
+        writeln!(file, "3,completed").unwrap();
+        writeln!(file, "4,cancelled").unwrap();
+        writeln!(file, "5,completed").unwrap();
+
+        let executor = QueryExecutor::new(metastore.clone());
+
+        // COPY data
+        let copy_def = QueryDefinition::Copy(CopyQuery {
+            source_filepath: csv_path.to_str().unwrap().to_string(),
+            destination_table_name: "orders".to_string(),
+            destination_columns: None,
+            does_csv_contain_header: false,
+        });
+        let copy_id = executor.submit_query(copy_def).unwrap();
+        executor.wait_for_completion(&copy_id).await.unwrap();
+
+        // SELECT with WHERE clause filtering for "completed" status
+        let select_def = QueryDefinition::Select(SelectQuery {
+            column_clauses: vec![
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "orders".to_string(),
+                    column_name: "id".to_string(),
+                }),
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "orders".to_string(),
+                    column_name: "status".to_string(),
+                }),
+            ],
+            where_clause: Some(ColumnExpression::BinaryOperation(ColumnarBinaryOperation {
+                left_operand: Box::new(ColumnExpression::ColumnReference(
+                    ColumnReferenceExpression {
+                        table_name: "orders".to_string(),
+                        column_name: "status".to_string(),
+                    },
+                )),
+                operator: BinaryOperator::Equal,
+                right_operand: Box::new(ColumnExpression::Literal(Literal {
+                    value: LiteralValue::Varchar("completed".to_string()),
+                })),
+            })),
+            order_by_clause: None,
+            limit_clause: None,
+        });
+
+        let select_id = executor.submit_query(select_def).unwrap();
+        executor.wait_for_completion(&select_id).await.unwrap();
+        let result = executor.get_result(&select_id, None).unwrap().unwrap();
+
+        // Should return 3 rows (id 1, 3, 5 with status "completed")
+        assert_eq!(result[0].row_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_select_with_where_greater_than() {
+        let dir = tempdir().unwrap();
+        let metastore = create_persistent_metastore(dir.path());
+
+        let columns = vec![
+            ColumnMetadata {
+                name: "id".to_string(),
+                column_type: ColumnType::Int64,
+            },
+            ColumnMetadata {
+                name: "salary".to_string(),
+                column_type: ColumnType::Int64,
+            },
+        ];
+        metastore
+            .create_table("employees".to_string(), columns)
+            .unwrap();
+
+        // Create CSV with salary data
+        let csv_path = dir.path().join("employees.csv");
+        let mut file = std::fs::File::create(&csv_path).unwrap();
+        writeln!(file, "1,50000").unwrap();
+        writeln!(file, "2,75000").unwrap();
+        writeln!(file, "3,60000").unwrap();
+        writeln!(file, "4,100000").unwrap();
+        writeln!(file, "5,55000").unwrap();
+
+        let executor = QueryExecutor::new(metastore.clone());
+
+        let copy_def = QueryDefinition::Copy(CopyQuery {
+            source_filepath: csv_path.to_str().unwrap().to_string(),
+            destination_table_name: "employees".to_string(),
+            destination_columns: None,
+            does_csv_contain_header: false,
+        });
+        let copy_id = executor.submit_query(copy_def).unwrap();
+        executor.wait_for_completion(&copy_id).await.unwrap();
+
+        // SELECT with WHERE salary > 60000
+        let select_def = QueryDefinition::Select(SelectQuery {
+            column_clauses: vec![
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "employees".to_string(),
+                    column_name: "id".to_string(),
+                }),
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "employees".to_string(),
+                    column_name: "salary".to_string(),
+                }),
+            ],
+            where_clause: Some(ColumnExpression::BinaryOperation(ColumnarBinaryOperation {
+                left_operand: Box::new(ColumnExpression::ColumnReference(
+                    ColumnReferenceExpression {
+                        table_name: "employees".to_string(),
+                        column_name: "salary".to_string(),
+                    },
+                )),
+                operator: BinaryOperator::GreaterThan,
+                right_operand: Box::new(ColumnExpression::Literal(Literal {
+                    value: LiteralValue::Int64(60000),
+                })),
+            })),
+            order_by_clause: None,
+            limit_clause: None,
+        });
+
+        let select_id = executor.submit_query(select_def).unwrap();
+        executor.wait_for_completion(&select_id).await.unwrap();
+        let result = executor.get_result(&select_id, None).unwrap().unwrap();
+
+        // Should return 2 rows (id 2,4 with salary > 60000)
+        assert_eq!(result[0].row_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_select_with_where_no_matches() {
+        let dir = tempdir().unwrap();
+        let metastore = create_persistent_metastore(dir.path());
+
+        let columns = vec![ColumnMetadata {
+            name: "value".to_string(),
+            column_type: ColumnType::Int64,
+        }];
+        metastore
+            .create_table("numbers".to_string(), columns)
+            .unwrap();
+
+        let csv_path = dir.path().join("numbers.csv");
+        let mut file = std::fs::File::create(&csv_path).unwrap();
+        writeln!(file, "1").unwrap();
+        writeln!(file, "2").unwrap();
+        writeln!(file, "3").unwrap();
+
+        let executor = QueryExecutor::new(metastore.clone());
+
+        let copy_def = QueryDefinition::Copy(CopyQuery {
+            source_filepath: csv_path.to_str().unwrap().to_string(),
+            destination_table_name: "numbers".to_string(),
+            destination_columns: None,
+            does_csv_contain_header: false,
+        });
+        let copy_id = executor.submit_query(copy_def).unwrap();
+        executor.wait_for_completion(&copy_id).await.unwrap();
+
+        // SELECT with WHERE that matches nothing
+        let select_def = QueryDefinition::Select(SelectQuery {
+            column_clauses: vec![ColumnExpression::ColumnReference(
+                ColumnReferenceExpression {
+                    table_name: "numbers".to_string(),
+                    column_name: "value".to_string(),
+                },
+            )],
+            where_clause: Some(ColumnExpression::BinaryOperation(ColumnarBinaryOperation {
+                left_operand: Box::new(ColumnExpression::ColumnReference(
+                    ColumnReferenceExpression {
+                        table_name: "numbers".to_string(),
+                        column_name: "value".to_string(),
+                    },
+                )),
+                operator: BinaryOperator::GreaterThan,
+                right_operand: Box::new(ColumnExpression::Literal(Literal {
+                    value: LiteralValue::Int64(100),
+                })),
+            })),
+            order_by_clause: None,
+            limit_clause: None,
+        });
+
+        let select_id = executor.submit_query(select_def).unwrap();
+        executor.wait_for_completion(&select_id).await.unwrap();
+        let result = executor.get_result(&select_id, None).unwrap().unwrap();
+
+        // Should return 0 rows
+        assert_eq!(result[0].row_count, 0);
+    }
+
+    // ========================================================================
+    // ORDER BY Clause Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_select_with_order_by_ascending() {
+        let dir = tempdir().unwrap();
+        let metastore = create_persistent_metastore(dir.path());
+
+        let columns = vec![
+            ColumnMetadata {
+                name: "id".to_string(),
+                column_type: ColumnType::Int64,
+            },
+            ColumnMetadata {
+                name: "name".to_string(),
+                column_type: ColumnType::Varchar,
+            },
+            ColumnMetadata {
+                name: "score".to_string(),
+                column_type: ColumnType::Int64,
+            },
+        ];
+        metastore
+            .create_table("scores".to_string(), columns)
+            .unwrap();
+
+        // Create CSV with unsorted data
+        let csv_path = dir.path().join("scores.csv");
+        let mut file = std::fs::File::create(&csv_path).unwrap();
+        writeln!(file, "1,Alice,95").unwrap();
+        writeln!(file, "2,Bob,78").unwrap();
+        writeln!(file, "3,Charlie,92").unwrap();
+        writeln!(file, "4,David,85").unwrap();
+
+        let executor = QueryExecutor::new(metastore.clone());
+
+        let copy_def = QueryDefinition::Copy(CopyQuery {
+            source_filepath: csv_path.to_str().unwrap().to_string(),
+            destination_table_name: "scores".to_string(),
+            destination_columns: None,
+            does_csv_contain_header: false,
+        });
+        let copy_id = executor.submit_query(copy_def).unwrap();
+        executor.wait_for_completion(&copy_id).await.unwrap();
+
+        // SELECT with ORDER BY score ascending
+        let select_def = QueryDefinition::Select(SelectQuery {
+            column_clauses: vec![
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "scores".to_string(),
+                    column_name: "id".to_string(),
+                }),
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "scores".to_string(),
+                    column_name: "score".to_string(),
+                }),
+            ],
+            where_clause: None,
+            order_by_clause: Some(vec![OrderByExpression {
+                column_index: 1, // score column
+                ascending: true,
+            }]),
+            limit_clause: None,
+        });
+
+        let select_id = executor.submit_query(select_def).unwrap();
+        executor.wait_for_completion(&select_id).await.unwrap();
+        let result = executor.get_result(&select_id, None).unwrap().unwrap();
+
+        assert_eq!(result[0].row_count, 4);
+        // Verify scores are in ascending order: 78, 85, 92, 95
+        if let ResultColumn::Int64(scores) = &result[0].columns[1] {
+            assert_eq!(scores, &vec![78, 85, 92, 95]);
+        } else {
+            panic!("Expected INT64 column");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_select_with_order_by_descending() {
+        let dir = tempdir().unwrap();
+        let metastore = create_persistent_metastore(dir.path());
+
+        let columns = vec![
+            ColumnMetadata {
+                name: "product".to_string(),
+                column_type: ColumnType::Varchar,
+            },
+            ColumnMetadata {
+                name: "price".to_string(),
+                column_type: ColumnType::Int64,
+            },
+        ];
+        metastore
+            .create_table("products".to_string(), columns)
+            .unwrap();
+
+        let csv_path = dir.path().join("products.csv");
+        let mut file = std::fs::File::create(&csv_path).unwrap();
+        writeln!(file, "Apple,10").unwrap();
+        writeln!(file, "Banana,5").unwrap();
+        writeln!(file, "Orange,8").unwrap();
+        writeln!(file, "Mango,15").unwrap();
+
+        let executor = QueryExecutor::new(metastore.clone());
+
+        let copy_def = QueryDefinition::Copy(CopyQuery {
+            source_filepath: csv_path.to_str().unwrap().to_string(),
+            destination_table_name: "products".to_string(),
+            destination_columns: None,
+            does_csv_contain_header: false,
+        });
+        let copy_id = executor.submit_query(copy_def).unwrap();
+        executor.wait_for_completion(&copy_id).await.unwrap();
+
+        // SELECT with ORDER BY price descending
+        let select_def = QueryDefinition::Select(SelectQuery {
+            column_clauses: vec![
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "products".to_string(),
+                    column_name: "product".to_string(),
+                }),
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "products".to_string(),
+                    column_name: "price".to_string(),
+                }),
+            ],
+            where_clause: None,
+            order_by_clause: Some(vec![OrderByExpression {
+                column_index: 1, // price column
+                ascending: false,
+            }]),
+            limit_clause: None,
+        });
+
+        let select_id = executor.submit_query(select_def).unwrap();
+        executor.wait_for_completion(&select_id).await.unwrap();
+        let result = executor.get_result(&select_id, None).unwrap().unwrap();
+
+        assert_eq!(result[0].row_count, 4);
+        // Verify prices are in descending order: 15, 10, 8, 5
+        if let ResultColumn::Int64(prices) = &result[0].columns[1] {
+            assert_eq!(prices, &vec![15, 10, 8, 5]);
+        } else {
+            panic!("Expected INT64 column");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_select_with_order_by_multiple_columns() {
+        let dir = tempdir().unwrap();
+        let metastore = create_persistent_metastore(dir.path());
+
+        let columns = vec![
+            ColumnMetadata {
+                name: "department".to_string(),
+                column_type: ColumnType::Varchar,
+            },
+            ColumnMetadata {
+                name: "salary".to_string(),
+                column_type: ColumnType::Int64,
+            },
+            ColumnMetadata {
+                name: "name".to_string(),
+                column_type: ColumnType::Varchar,
+            },
+        ];
+        metastore
+            .create_table("staff".to_string(), columns)
+            .unwrap();
+
+        let csv_path = dir.path().join("staff.csv");
+        let mut file = std::fs::File::create(&csv_path).unwrap();
+        writeln!(file, "Sales,50000,Alice").unwrap();
+        writeln!(file, "HR,40000,Bob").unwrap();
+        writeln!(file, "Sales,55000,Charlie").unwrap();
+        writeln!(file, "HR,45000,Diana").unwrap();
+
+        let executor = QueryExecutor::new(metastore.clone());
+
+        let copy_def = QueryDefinition::Copy(CopyQuery {
+            source_filepath: csv_path.to_str().unwrap().to_string(),
+            destination_table_name: "staff".to_string(),
+            destination_columns: None,
+            does_csv_contain_header: false,
+        });
+        let copy_id = executor.submit_query(copy_def).unwrap();
+        executor.wait_for_completion(&copy_id).await.unwrap();
+
+        // SELECT with ORDER BY department ascending, then salary descending
+        let select_def = QueryDefinition::Select(SelectQuery {
+            column_clauses: vec![
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "staff".to_string(),
+                    column_name: "department".to_string(),
+                }),
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "staff".to_string(),
+                    column_name: "salary".to_string(),
+                }),
+            ],
+            where_clause: None,
+            order_by_clause: Some(vec![
+                OrderByExpression {
+                    column_index: 0, // department
+                    ascending: true,
+                },
+                OrderByExpression {
+                    column_index: 1, // salary
+                    ascending: false,
+                },
+            ]),
+            limit_clause: None,
+        });
+
+        let select_id = executor.submit_query(select_def).unwrap();
+        executor.wait_for_completion(&select_id).await.unwrap();
+        let result = executor.get_result(&select_id, None).unwrap().unwrap();
+
+        assert_eq!(result[0].row_count, 4);
+        // Verify: HR (40k, 45k), Sales (55k, 50k)
+        if let ResultColumn::Varchar(depts) = &result[0].columns[0] {
+            assert_eq!(depts, &vec!["HR", "HR", "Sales", "Sales"]);
+        } else {
+            panic!("Expected VARCHAR column");
+        }
+        if let ResultColumn::Int64(salaries) = &result[0].columns[1] {
+            assert_eq!(salaries, &vec![45000, 40000, 55000, 50000]);
+        } else {
+            panic!("Expected INT64 column");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_select_with_order_by_string_column() {
+        let dir = tempdir().unwrap();
+        let metastore = create_persistent_metastore(dir.path());
+
+        let columns = vec![ColumnMetadata {
+            name: "city".to_string(),
+            column_type: ColumnType::Varchar,
+        }];
+        metastore
+            .create_table("cities".to_string(), columns)
+            .unwrap();
+
+        let csv_path = dir.path().join("cities.csv");
+        let mut file = std::fs::File::create(&csv_path).unwrap();
+        writeln!(file, "Zebra").unwrap();
+        writeln!(file, "Apple").unwrap();
+        writeln!(file, "Monkey").unwrap();
+        writeln!(file, "Banana").unwrap();
+
+        let executor = QueryExecutor::new(metastore.clone());
+
+        let copy_def = QueryDefinition::Copy(CopyQuery {
+            source_filepath: csv_path.to_str().unwrap().to_string(),
+            destination_table_name: "cities".to_string(),
+            destination_columns: None,
+            does_csv_contain_header: false,
+        });
+        let copy_id = executor.submit_query(copy_def).unwrap();
+        executor.wait_for_completion(&copy_id).await.unwrap();
+
+        // SELECT with ORDER BY city ascending
+        let select_def = QueryDefinition::Select(SelectQuery {
+            column_clauses: vec![ColumnExpression::ColumnReference(
+                ColumnReferenceExpression {
+                    table_name: "cities".to_string(),
+                    column_name: "city".to_string(),
+                },
+            )],
+            where_clause: None,
+            order_by_clause: Some(vec![OrderByExpression {
+                column_index: 0,
+                ascending: true,
+            }]),
+            limit_clause: None,
+        });
+
+        let select_id = executor.submit_query(select_def).unwrap();
+        executor.wait_for_completion(&select_id).await.unwrap();
+        let result = executor.get_result(&select_id, None).unwrap().unwrap();
+
+        assert_eq!(result[0].row_count, 4);
+        if let ResultColumn::Varchar(cities) = &result[0].columns[0] {
+            assert_eq!(cities, &vec!["Apple", "Banana", "Monkey", "Zebra"]);
+        } else {
+            panic!("Expected VARCHAR column");
+        }
+    }
+
+    // ========================================================================
+    // LIMIT Clause Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_select_with_limit() {
+        let dir = tempdir().unwrap();
+        let metastore = create_persistent_metastore(dir.path());
+
+        let columns = vec![ColumnMetadata {
+            name: "value".to_string(),
+            column_type: ColumnType::Int64,
+        }];
+        metastore
+            .create_table("numbers".to_string(), columns)
+            .unwrap();
+
+        // Create CSV with 10 rows
+        let csv_path = dir.path().join("numbers.csv");
+        let mut file = std::fs::File::create(&csv_path).unwrap();
+        for i in 1..=10 {
+            writeln!(file, "{}", i).unwrap();
+        }
+
+        let executor = QueryExecutor::new(metastore.clone());
+
+        let copy_def = QueryDefinition::Copy(CopyQuery {
+            source_filepath: csv_path.to_str().unwrap().to_string(),
+            destination_table_name: "numbers".to_string(),
+            destination_columns: None,
+            does_csv_contain_header: false,
+        });
+        let copy_id = executor.submit_query(copy_def).unwrap();
+        executor.wait_for_completion(&copy_id).await.unwrap();
+
+        // SELECT with LIMIT 5
+        let select_def = QueryDefinition::Select(SelectQuery {
+            column_clauses: vec![ColumnExpression::ColumnReference(
+                ColumnReferenceExpression {
+                    table_name: "numbers".to_string(),
+                    column_name: "value".to_string(),
+                },
+            )],
+            where_clause: None,
+            order_by_clause: None,
+            limit_clause: Some(LimitExpression { limit: 5 }),
+        });
+
+        let select_id = executor.submit_query(select_def).unwrap();
+        executor.wait_for_completion(&select_id).await.unwrap();
+        let result = executor.get_result(&select_id, None).unwrap().unwrap();
+
+        // Should return only 5 rows
+        assert_eq!(result[0].row_count, 5);
+        if let ResultColumn::Int64(values) = &result[0].columns[0] {
+            assert_eq!(values, &vec![1, 2, 3, 4, 5]);
+        } else {
+            panic!("Expected INT64 column");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_select_with_limit_exceeds_rows() {
+        let dir = tempdir().unwrap();
+        let metastore = create_persistent_metastore(dir.path());
+
+        let columns = vec![ColumnMetadata {
+            name: "value".to_string(),
+            column_type: ColumnType::Int64,
+        }];
+        metastore.create_table("data".to_string(), columns).unwrap();
+
+        let csv_path = dir.path().join("data.csv");
+        let mut file = std::fs::File::create(&csv_path).unwrap();
+        writeln!(file, "1").unwrap();
+        writeln!(file, "2").unwrap();
+        writeln!(file, "3").unwrap();
+
+        let executor = QueryExecutor::new(metastore.clone());
+
+        let copy_def = QueryDefinition::Copy(CopyQuery {
+            source_filepath: csv_path.to_str().unwrap().to_string(),
+            destination_table_name: "data".to_string(),
+            destination_columns: None,
+            does_csv_contain_header: false,
+        });
+        let copy_id = executor.submit_query(copy_def).unwrap();
+        executor.wait_for_completion(&copy_id).await.unwrap();
+
+        // SELECT with LIMIT 100 (more than available rows)
+        let select_def = QueryDefinition::Select(SelectQuery {
+            column_clauses: vec![ColumnExpression::ColumnReference(
+                ColumnReferenceExpression {
+                    table_name: "data".to_string(),
+                    column_name: "value".to_string(),
+                },
+            )],
+            where_clause: None,
+            order_by_clause: None,
+            limit_clause: Some(LimitExpression { limit: 100 }),
+        });
+
+        let select_id = executor.submit_query(select_def).unwrap();
+        executor.wait_for_completion(&select_id).await.unwrap();
+        let result = executor.get_result(&select_id, None).unwrap().unwrap();
+
+        // Should return only 3 rows
+        assert_eq!(result[0].row_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_select_with_limit_zero() {
+        let dir = tempdir().unwrap();
+        let metastore = create_persistent_metastore(dir.path());
+
+        let columns = vec![ColumnMetadata {
+            name: "value".to_string(),
+            column_type: ColumnType::Int64,
+        }];
+        metastore.create_table("test".to_string(), columns).unwrap();
+
+        let csv_path = dir.path().join("test.csv");
+        let mut file = std::fs::File::create(&csv_path).unwrap();
+        writeln!(file, "1").unwrap();
+        writeln!(file, "2").unwrap();
+
+        let executor = QueryExecutor::new(metastore.clone());
+
+        let copy_def = QueryDefinition::Copy(CopyQuery {
+            source_filepath: csv_path.to_str().unwrap().to_string(),
+            destination_table_name: "test".to_string(),
+            destination_columns: None,
+            does_csv_contain_header: false,
+        });
+        let copy_id = executor.submit_query(copy_def).unwrap();
+        executor.wait_for_completion(&copy_id).await.unwrap();
+
+        // SELECT with LIMIT 0
+        let select_def = QueryDefinition::Select(SelectQuery {
+            column_clauses: vec![ColumnExpression::ColumnReference(
+                ColumnReferenceExpression {
+                    table_name: "test".to_string(),
+                    column_name: "value".to_string(),
+                },
+            )],
+            where_clause: None,
+            order_by_clause: None,
+            limit_clause: Some(LimitExpression { limit: 0 }),
+        });
+
+        let select_id = executor.submit_query(select_def).unwrap();
+        executor.wait_for_completion(&select_id).await.unwrap();
+        let result = executor.get_result(&select_id, None).unwrap().unwrap();
+
+        // Should return 0 rows
+        assert_eq!(result[0].row_count, 0);
+    }
+
+    // ========================================================================
+    // Combined WHERE + ORDER BY + LIMIT Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_select_with_where_order_by_limit() {
+        let dir = tempdir().unwrap();
+        let metastore = create_persistent_metastore(dir.path());
+
+        let columns = vec![
+            ColumnMetadata {
+                name: "id".to_string(),
+                column_type: ColumnType::Int64,
+            },
+            ColumnMetadata {
+                name: "category".to_string(),
+                column_type: ColumnType::Varchar,
+            },
+            ColumnMetadata {
+                name: "price".to_string(),
+                column_type: ColumnType::Int64,
+            },
+        ];
+        metastore
+            .create_table("items".to_string(), columns)
+            .unwrap();
+
+        let csv_path = dir.path().join("items.csv");
+        let mut file = std::fs::File::create(&csv_path).unwrap();
+        writeln!(file, "1,book,20").unwrap();
+        writeln!(file, "2,pen,5").unwrap();
+        writeln!(file, "3,book,15").unwrap();
+        writeln!(file, "4,pen,8").unwrap();
+        writeln!(file, "5,book,25").unwrap();
+        writeln!(file, "6,pen,10").unwrap();
+        writeln!(file, "7,book,12").unwrap();
+
+        let executor = QueryExecutor::new(metastore.clone());
+
+        let copy_def = QueryDefinition::Copy(CopyQuery {
+            source_filepath: csv_path.to_str().unwrap().to_string(),
+            destination_table_name: "items".to_string(),
+            destination_columns: None,
+            does_csv_contain_header: false,
+        });
+        let copy_id = executor.submit_query(copy_def).unwrap();
+        executor.wait_for_completion(&copy_id).await.unwrap();
+
+        // SELECT books with price DESC, LIMIT 2
+        let select_def = QueryDefinition::Select(SelectQuery {
+            column_clauses: vec![
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "items".to_string(),
+                    column_name: "id".to_string(),
+                }),
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "items".to_string(),
+                    column_name: "price".to_string(),
+                }),
+            ],
+            where_clause: Some(ColumnExpression::BinaryOperation(ColumnarBinaryOperation {
+                left_operand: Box::new(ColumnExpression::ColumnReference(
+                    ColumnReferenceExpression {
+                        table_name: "items".to_string(),
+                        column_name: "category".to_string(),
+                    },
+                )),
+                operator: BinaryOperator::Equal,
+                right_operand: Box::new(ColumnExpression::Literal(Literal {
+                    value: LiteralValue::Varchar("book".to_string()),
+                })),
+            })),
+            order_by_clause: Some(vec![OrderByExpression {
+                column_index: 1, // price
+                ascending: false,
+            }]),
+            limit_clause: Some(LimitExpression { limit: 2 }),
+        });
+
+        let select_id = executor.submit_query(select_def).unwrap();
+        executor.wait_for_completion(&select_id).await.unwrap();
+        let result = executor.get_result(&select_id, None).unwrap().unwrap();
+
+        // Should return 2 rows: id 5 (price 25), id 1 (price 20)
+        assert_eq!(result[0].row_count, 2);
+        if let ResultColumn::Int64(ids) = &result[0].columns[0] {
+            assert_eq!(ids, &vec![5, 1]);
+        } else {
+            panic!("Expected INT64 column for ids");
+        }
+        if let ResultColumn::Int64(prices) = &result[0].columns[1] {
+            assert_eq!(prices, &vec![25, 20]);
+        } else {
+            panic!("Expected INT64 column for prices");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_select_with_where_and_limit_no_order() {
+        let dir = tempdir().unwrap();
+        let metastore = create_persistent_metastore(dir.path());
+
+        let columns = vec![
+            ColumnMetadata {
+                name: "status".to_string(),
+                column_type: ColumnType::Varchar,
+            },
+            ColumnMetadata {
+                name: "value".to_string(),
+                column_type: ColumnType::Int64,
+            },
+        ];
+        metastore
+            .create_table("records".to_string(), columns)
+            .unwrap();
+
+        let csv_path = dir.path().join("records.csv");
+        let mut file = std::fs::File::create(&csv_path).unwrap();
+        writeln!(file, "active,100").unwrap();
+        writeln!(file, "inactive,200").unwrap();
+        writeln!(file, "active,150").unwrap();
+        writeln!(file, "inactive,250").unwrap();
+        writeln!(file, "active,200").unwrap();
+
+        let executor = QueryExecutor::new(metastore.clone());
+
+        let copy_def = QueryDefinition::Copy(CopyQuery {
+            source_filepath: csv_path.to_str().unwrap().to_string(),
+            destination_table_name: "records".to_string(),
+            destination_columns: None,
+            does_csv_contain_header: false,
+        });
+        let copy_id = executor.submit_query(copy_def).unwrap();
+        executor.wait_for_completion(&copy_id).await.unwrap();
+
+        // SELECT active records with LIMIT 2 (no ORDER BY)
+        let select_def = QueryDefinition::Select(SelectQuery {
+            column_clauses: vec![
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "records".to_string(),
+                    column_name: "status".to_string(),
+                }),
+                ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                    table_name: "records".to_string(),
+                    column_name: "value".to_string(),
+                }),
+            ],
+            where_clause: Some(ColumnExpression::BinaryOperation(ColumnarBinaryOperation {
+                left_operand: Box::new(ColumnExpression::ColumnReference(
+                    ColumnReferenceExpression {
+                        table_name: "records".to_string(),
+                        column_name: "status".to_string(),
+                    },
+                )),
+                operator: BinaryOperator::Equal,
+                right_operand: Box::new(ColumnExpression::Literal(Literal {
+                    value: LiteralValue::Varchar("active".to_string()),
+                })),
+            })),
+            order_by_clause: None,
+            limit_clause: Some(LimitExpression { limit: 2 }),
+        });
+
+        let select_id = executor.submit_query(select_def).unwrap();
+        executor.wait_for_completion(&select_id).await.unwrap();
+        let result = executor.get_result(&select_id, None).unwrap().unwrap();
+
+        // Should return 2 rows (first 2 "active" records)
         assert_eq!(result[0].row_count, 2);
     }
 }
