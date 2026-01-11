@@ -1,0 +1,2 @@
+[alias]
+mimsh = "run --bin mimsh"
