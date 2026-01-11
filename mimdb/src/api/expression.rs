@@ -25,6 +25,7 @@ use crate::api::models::LiteralValue;
 use crate::api::models::UnaryOperator;
 use anyhow::Result;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 /// Context for expression evaluation - provides access to column data
 pub struct EvaluationContext<'a> {
@@ -334,18 +335,16 @@ impl ExpressionEvaluator {
 }
 
 /// Collect all table names referenced in an expression
-pub fn collect_table_references(expr: &ColumnExpression) -> Vec<String> {
-    let mut tables = Vec::new();
+pub fn collect_table_references(expr: &ColumnExpression) -> HashSet<String> {
+    let mut tables = HashSet::new();
     collect_table_references_recursive(expr, &mut tables);
-    tables.sort();
-    tables.dedup();
     tables
 }
 
-fn collect_table_references_recursive(expr: &ColumnExpression, tables: &mut Vec<String>) {
+fn collect_table_references_recursive(expr: &ColumnExpression, tables: &mut HashSet<String>) {
     match expr {
         ColumnExpression::ColumnReference(col_ref) => {
-            tables.push(col_ref.table_name.clone());
+            tables.insert(col_ref.table_name.clone());
         }
         ColumnExpression::Function(func) => {
             for arg in &func.arguments {
@@ -358,6 +357,34 @@ fn collect_table_references_recursive(expr: &ColumnExpression, tables: &mut Vec<
         }
         ColumnExpression::UnaryOperation(unary_op) => {
             collect_table_references_recursive(&unary_op.operand, tables);
+        }
+        ColumnExpression::Literal(_) => {}
+    }
+}
+
+/// Collect all column names referenced in an expression
+pub fn collect_column_references(expr: &ColumnExpression) -> HashSet<String> {
+    let mut columns = HashSet::new();
+    collect_column_references_recursive(expr, &mut columns);
+    columns
+}
+
+fn collect_column_references_recursive(expr: &ColumnExpression, columns: &mut HashSet<String>) {
+    match expr {
+        ColumnExpression::ColumnReference(col_ref) => {
+            columns.insert(col_ref.column_name.clone());
+        }
+        ColumnExpression::Function(func) => {
+            for arg in &func.arguments {
+                collect_column_references_recursive(arg, columns);
+            }
+        }
+        ColumnExpression::BinaryOperation(bin_op) => {
+            collect_column_references_recursive(&bin_op.left_operand, columns);
+            collect_column_references_recursive(&bin_op.right_operand, columns);
+        }
+        ColumnExpression::UnaryOperation(unary_op) => {
+            collect_column_references_recursive(&unary_op.operand, columns);
         }
         ColumnExpression::Literal(_) => {}
     }

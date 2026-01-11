@@ -13,7 +13,19 @@
 use crate::ColumnData;
 use crate::ColumnType;
 use crate::Table;
+use crate::api::expression::EvaluationContext;
+use crate::api::expression::ExpressionEvaluator;
+use crate::api::expression::collect_column_references;
+use crate::api::expression::collect_table_references;
+use crate::api::models::ColumnExpression;
+use crate::api::models::ColumnExpression::BinaryOperation;
+use crate::api::models::ColumnExpression::ColumnReference;
+use crate::api::models::ColumnExpression::Function;
+use crate::api::models::ColumnExpression::Literal;
+use crate::api::models::ColumnExpression::UnaryOperation;
 use crate::api::models::CopyQuery;
+use crate::api::models::LimitExpression;
+use crate::api::models::OrderByExpression;
 use crate::api::models::QueryDefinition;
 use crate::api::models::QueryResult;
 use crate::api::models::QueryResultItem;
@@ -27,6 +39,7 @@ use anyhow::Context;
 use anyhow::Result;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,8 +57,20 @@ pub struct CopyPlan {
 /// Plan for a SELECT query
 #[derive(Debug, Clone)]
 pub struct SelectPlan {
+    /// Table metadata for the referenced table
     pub table_meta: TableMetadata,
+    /// Data files to read
     pub data_files: Vec<PathBuf>,
+    /// Column metadata for only the columns required by the query
+    pub required_columns: Vec<ColumnMetadata>,
+    /// Column expressions to evaluate (output columns)
+    pub column_clauses: Vec<ColumnExpression>,
+    /// Optional WHERE clause for filtering
+    pub where_clause: Option<ColumnExpression>,
+    /// Optional ORDER BY clause
+    pub order_by_clause: Option<Vec<OrderByExpression>>,
+    /// Optional LIMIT clause
+    pub limit_clause: Option<LimitExpression>,
 }
 
 /// Query execution plan
@@ -100,6 +125,30 @@ pub struct QueryExecutor {
     metastore: Arc<Metastore>,
 }
 
+/// Extract the single table name referenced in a SELECT query.
+/// Returns an error if no tables or multiple tables are referenced.
+fn extract_single_table_reference(select_query: &SelectQuery) -> Result<String> {
+    let mut table_names = HashSet::new();
+    for expr in &select_query.column_clauses {
+        table_names.extend(collect_table_references(expr));
+    }
+    if let Some(ref where_clause) = select_query.where_clause {
+        table_names.extend(collect_table_references(where_clause));
+    }
+
+    if table_names.is_empty() {
+        anyhow::bail!("SELECT query must reference at least one table");
+    }
+    if table_names.len() > 1 {
+        anyhow::bail!(
+            "SELECT query references multiple tables ({:?}), but only single-table queries are supported",
+            table_names
+        );
+    }
+
+    Ok(table_names.into_iter().next().unwrap())
+}
+
 impl QueryExecutor {
     pub fn new(metastore: Arc<Metastore>) -> Self {
         Self {
@@ -108,7 +157,7 @@ impl QueryExecutor {
         }
     }
 
-    /// Submit a new query for execution (async - returns immediately)
+    /// Submit a new query for execution
     pub fn submit_query(&self, definition: QueryDefinition) -> Result<String> {
         // Validate query before submission
         self.validate_query(&definition)?;
@@ -225,9 +274,9 @@ impl QueryExecutor {
                 .metastore
                 .get_table_by_name(&copy_query.destination_table_name)
                 .map(|t| t.table_id),
-            QueryDefinition::Select(select_query) => self
-                .metastore
-                .get_table_by_name(&select_query.table_name)
+            QueryDefinition::Select(select_query) => extract_single_table_reference(select_query)
+                .ok()
+                .and_then(|name| self.metastore.get_table_by_name(&name))
                 .map(|t| t.table_id),
         };
 
@@ -265,9 +314,37 @@ impl QueryExecutor {
                 Ok(())
             }
             QueryDefinition::Select(select_query) => {
-                // Check if table exists
-                if !self.metastore.table_exists(&select_query.table_name) {
-                    anyhow::bail!("Table '{}' does not exist", select_query.table_name);
+                // Validate that column clauses is not empty
+                if select_query.column_clauses.is_empty() {
+                    anyhow::bail!("SELECT query must have at least one column clause");
+                }
+
+                // Extract and validate the single table reference
+                let table_name = extract_single_table_reference(select_query)?;
+
+                // Check that the table exists
+                if !self.metastore.table_exists(&table_name) {
+                    anyhow::bail!("Table '{}' does not exist", table_name);
+                }
+
+                // Validate order by indices
+                if let Some(ref order_by) = select_query.order_by_clause {
+                    for order in order_by {
+                        if order.column_index >= select_query.column_clauses.len() {
+                            anyhow::bail!(
+                                "ORDER BY column index {} is out of bounds (max: {})",
+                                order.column_index,
+                                select_query.column_clauses.len() - 1
+                            );
+                        }
+                    }
+                }
+
+                // Validate limit is positive
+                if let Some(ref limit) = select_query.limit_clause
+                    && limit.limit < 0
+                {
+                    anyhow::bail!("LIMIT must be non-negative, got {}", limit.limit);
                 }
 
                 Ok(())
@@ -325,9 +402,10 @@ impl QueryExecutor {
 
     /// Plan a SELECT query - resolve table metadata and list data files
     fn plan_select(metastore: &Metastore, query: &SelectQuery) -> Result<SelectPlan> {
+        let table_name = extract_single_table_reference(query)?;
         let table_meta = metastore
-            .get_table_by_name(&query.table_name)
-            .ok_or_else(|| anyhow::anyhow!("Table '{}' not found", query.table_name))?;
+            .get_table_by_name(&table_name)
+            .ok_or_else(|| anyhow::anyhow!("Table '{}' not found", table_name))?;
 
         // Collect all existing data files
         let data_files: Vec<PathBuf> = table_meta
@@ -337,10 +415,100 @@ impl QueryExecutor {
             .cloned()
             .collect();
 
+        let column_types = Self::build_column_type_map(&table_meta);
+
+        // Validate column expressions
+        for (i, expr) in query.column_clauses.iter().enumerate() {
+            Self::validate_expression(expr, &column_types)
+                .context(format!("Invalid column expression at index {}", i))?;
+        }
+
+        // Validate WHERE clause expression
+        if let Some(ref where_clause) = query.where_clause {
+            Self::validate_expression(where_clause, &column_types)
+                .context("Invalid WHERE clause expression")?;
+
+            // WHERE clause must evaluate to boolean
+            let where_type = ExpressionEvaluator::infer_type(where_clause, &column_types)?;
+            if where_type != ColumnType::Bool {
+                anyhow::bail!("WHERE clause must evaluate to BOOL, got {:?}", where_type);
+            }
+        }
+
+        // Collect all column names referenced in the query
+        let mut required_column_names: HashSet<String> = HashSet::new();
+        for expr in &query.column_clauses {
+            required_column_names.extend(collect_column_references(expr));
+        }
+        if let Some(ref where_clause) = query.where_clause {
+            required_column_names.extend(collect_column_references(where_clause));
+        }
+
+        // Build required columns metadata (preserving order from table schema)
+        let required_columns: Vec<ColumnMetadata> = table_meta
+            .columns
+            .iter()
+            .filter(|col| required_column_names.contains(&col.name))
+            .cloned()
+            .collect();
+
         Ok(SelectPlan {
             table_meta,
             data_files,
+            required_columns,
+            column_clauses: query.column_clauses.clone(),
+            where_clause: query.where_clause.clone(),
+            order_by_clause: query.order_by_clause.clone(),
+            limit_clause: query.limit_clause.clone(),
         })
+    }
+
+    /// Build a map of (table_name, column_name) -> ColumnType
+    fn build_column_type_map(table_meta: &TableMetadata) -> HashMap<(String, String), ColumnType> {
+        let mut column_types = HashMap::new();
+        for col in &table_meta.columns {
+            column_types.insert(
+                (table_meta.name.clone(), col.name.clone()),
+                col.column_type.clone(),
+            );
+        }
+        column_types
+    }
+
+    /// Validate an expression - check that all column references exist
+    fn validate_expression(
+        expr: &ColumnExpression,
+        column_types: &HashMap<(String, String), ColumnType>,
+    ) -> Result<()> {
+        match expr {
+            ColumnReference(col_ref) => {
+                let key = (col_ref.table_name.clone(), col_ref.column_name.clone());
+                if !column_types.contains_key(&key) {
+                    anyhow::bail!(
+                        "Column '{}.{}' not found",
+                        col_ref.table_name,
+                        col_ref.column_name
+                    );
+                }
+                Ok(())
+            }
+            Literal(_) => Ok(()),
+            Function(func) => {
+                for arg in &func.arguments {
+                    Self::validate_expression(arg, column_types)?;
+                }
+                Ok(())
+            }
+            BinaryOperation(bin_op) => {
+                Self::validate_expression(&bin_op.left_operand, column_types)?;
+                Self::validate_expression(&bin_op.right_operand, column_types)?;
+                Ok(())
+            }
+            UnaryOperation(unary_op) => {
+                Self::validate_expression(&unary_op.operand, column_types)?;
+                Ok(())
+            }
+        }
     }
 
     /// Execute a query plan and return the result
@@ -459,28 +627,24 @@ impl QueryExecutor {
 
     /// Execute a SELECT query plan
     fn execute_select_plan(plan: &SelectPlan) -> Result<QueryResult> {
-        // Load all data files for the table
-        let mut merged_columns: HashMap<String, ColumnData> = HashMap::new();
-        let mut total_rows = 0usize;
-
-        // Initialize merged columns based on table schema
-        for col in &plan.table_meta.columns {
+        let mut columns: HashMap<String, ColumnData> = HashMap::new();
+        for col in &plan.required_columns {
             let initial_data = match col.column_type {
                 ColumnType::Int64 => ColumnData::Int64(Vec::new()),
                 ColumnType::Varchar => ColumnData::Varchar(Vec::new()),
                 ColumnType::Bool => ColumnData::Bool(Vec::new()),
             };
-            merged_columns.insert(col.name.clone(), initial_data);
+            columns.insert(col.name.clone(), initial_data);
         }
 
-        // Read and merge data from all files (files were validated during planning)
+        let mut total_rows = 0usize;
         for file_path in &plan.data_files {
             let table = Table::deserialize(file_path)
-                .with_context(|| format!("Failed to read data file: {:?}", file_path))?;
+                .context(format!("Failed to read data file: {:?}", file_path))?;
 
             for (name, data) in table.columns {
-                if let Some(merged) = merged_columns.get_mut(&name) {
-                    match (merged, data) {
+                if let Some(col_storage) = columns.get_mut(&name) {
+                    match (col_storage, data) {
                         (ColumnData::Int64(dest), ColumnData::Int64(src)) => {
                             dest.extend(src);
                         }
@@ -498,23 +662,179 @@ impl QueryExecutor {
             total_rows += table.row_count;
         }
 
-        // Convert to result format, preserving column order from schema
-        let mut columns = Vec::new();
-        for col_meta in &plan.table_meta.columns {
-            if let Some(data) = merged_columns.remove(&col_meta.name) {
-                let result_col = match data {
-                    ColumnData::Int64(vec) => ResultColumn::Int64(vec),
-                    ColumnData::Varchar(vec) => ResultColumn::Varchar(vec),
-                };
-                columns.push(result_col);
-            }
-        }
+        // If no ORDER BY clause, we may evaluate only up to LIMIT rows early
+        let early_limit = if plan.order_by_clause.is_none() {
+            plan.limit_clause.as_ref().map(|l| l.limit as usize)
+        } else {
+            None
+        };
 
-        // QueryResult is an array of QueryResultItem as per OpenAPI spec
-        Ok(vec![QueryResultItem {
-            row_count: total_rows as i32,
+        // Apply WHERE clause and evaluate column expressions
+        let result_columns = Self::filter_and_evaluate(
+            &plan.table_meta.name,
             columns,
+            total_rows,
+            plan.where_clause.as_ref(),
+            &plan.column_clauses,
+            early_limit,
+        )?;
+
+        let filtered_row_count = result_columns.first().map(|c| c.len()).unwrap_or(0);
+
+        // Apply ORDER BY if specified
+        let ordered_indices: Vec<usize> = if let Some(ref order_by) = plan.order_by_clause {
+            Self::compute_sort_order(&result_columns, order_by, filtered_row_count)?
+        } else {
+            (0..filtered_row_count).collect()
+        };
+
+        // Apply LIMIT if specified
+        let final_indices: Vec<usize> = if let Some(ref limit) = plan.limit_clause {
+            let limit_count = limit.limit as usize;
+            ordered_indices.into_iter().take(limit_count).collect()
+        } else {
+            ordered_indices
+        };
+
+        // Reorder result columns based on final indices
+        let final_columns: Vec<ResultColumn> = result_columns
+            .into_iter()
+            .map(|col| Self::reorder_column_data(col, &final_indices))
+            .collect();
+
+        Ok(vec![QueryResultItem {
+            row_count: final_indices.len() as i32,
+            columns: final_columns,
         }])
+    }
+
+    /// Filter rows based on WHERE clause and evaluate column expressions
+    fn filter_and_evaluate(
+        table_name: &str,
+        columns: HashMap<String, ColumnData>,
+        row_count: usize,
+        where_clause: Option<&ColumnExpression>,
+        column_clauses: &[ColumnExpression],
+        early_limit: Option<usize>,
+    ) -> Result<Vec<ColumnData>> {
+        // Determine final columns and row count based on WHERE clause and limit
+        let (final_columns, final_row_count) = if let Some(where_expr) = where_clause {
+            // Build context for WHERE evaluation
+            let mut column_map = HashMap::new();
+            for (col_name, data) in &columns {
+                column_map.insert((table_name.to_string(), col_name.clone()), data);
+            }
+            let ctx = EvaluationContext::new(column_map, row_count);
+
+            // Evaluate WHERE clause to get filter mask
+            let filter_result = ExpressionEvaluator::evaluate(where_expr, &ctx)?;
+            let passing_indices: Vec<usize> = match filter_result {
+                ColumnData::Bool(mask) => {
+                    let iter = mask
+                        .into_iter()
+                        .enumerate()
+                        .filter_map(|(i, passes)| if passes { Some(i) } else { None });
+                    if let Some(limit) = early_limit {
+                        iter.take(limit).collect()
+                    } else {
+                        iter.collect()
+                    }
+                }
+                _ => anyhow::bail!("WHERE clause must evaluate to BOOL"),
+            };
+
+            let filtered: HashMap<String, ColumnData> = columns
+                .into_iter()
+                .map(|(name, data)| (name, Self::filter_column_data(data, &passing_indices)))
+                .collect();
+            (filtered, passing_indices.len())
+        } else if let Some(limit) = early_limit
+            && limit < row_count
+        {
+            let limited: HashMap<String, ColumnData> = columns
+                .into_iter()
+                .map(|(name, data)| (name, Self::take_first_n(data, limit)))
+                .collect();
+            (limited, limit)
+        } else {
+            (columns, row_count)
+        };
+
+        // Build final context and evaluate column expressions
+        let mut column_map = HashMap::new();
+        for (col_name, data) in &final_columns {
+            column_map.insert((table_name.to_string(), col_name.clone()), data);
+        }
+        let ctx = EvaluationContext::new(column_map, final_row_count);
+
+        column_clauses
+            .iter()
+            .map(|expr| ExpressionEvaluator::evaluate(expr, &ctx))
+            .collect()
+    }
+
+    /// Filter column data to only include rows at the specified indices
+    fn filter_column_data(data: ColumnData, indices: &[usize]) -> ColumnData {
+        match data {
+            ColumnData::Int64(vec) => ColumnData::Int64(indices.iter().map(|&i| vec[i]).collect()),
+            ColumnData::Varchar(vec) => {
+                ColumnData::Varchar(indices.iter().map(|&i| vec[i].clone()).collect())
+            }
+            ColumnData::Bool(vec) => ColumnData::Bool(indices.iter().map(|&i| vec[i]).collect()),
+        }
+    }
+
+    /// Take the first n elements from column data
+    fn take_first_n(data: ColumnData, n: usize) -> ColumnData {
+        match data {
+            ColumnData::Int64(vec) => ColumnData::Int64(vec.into_iter().take(n).collect()),
+            ColumnData::Varchar(vec) => ColumnData::Varchar(vec.into_iter().take(n).collect()),
+            ColumnData::Bool(vec) => ColumnData::Bool(vec.into_iter().take(n).collect()),
+        }
+    }
+
+    /// Compute sort order based on ORDER BY clause
+    fn compute_sort_order(
+        columns: &[ColumnData],
+        order_by: &[OrderByExpression],
+        row_count: usize,
+    ) -> Result<Vec<usize>> {
+        let mut indices: Vec<usize> = (0..row_count).collect();
+
+        indices.sort_by(|&a, &b| {
+            for order in order_by {
+                let col_idx = order.column_index;
+                assert!(col_idx < columns.len());
+
+                let cmp = match &columns[col_idx] {
+                    ColumnData::Int64(vec) => vec[a].cmp(&vec[b]),
+                    ColumnData::Varchar(vec) => vec[a].cmp(&vec[b]),
+                    ColumnData::Bool(vec) => vec[a].cmp(&vec[b]),
+                };
+
+                let cmp = if order.ascending { cmp } else { cmp.reverse() };
+
+                if cmp != std::cmp::Ordering::Equal {
+                    return cmp;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+
+        Ok(indices)
+    }
+
+    /// Reorder column data based on indices
+    fn reorder_column_data(data: ColumnData, indices: &[usize]) -> ResultColumn {
+        match data {
+            ColumnData::Int64(vec) => {
+                ResultColumn::Int64(indices.iter().map(|&i| vec[i]).collect())
+            }
+            ColumnData::Varchar(vec) => {
+                ResultColumn::Varchar(indices.iter().map(|&i| vec[i].clone()).collect())
+            }
+            ColumnData::Bool(vec) => ResultColumn::Bool(indices.iter().map(|&i| vec[i]).collect()),
+        }
     }
 
     /// Get all queries (shallow)
@@ -627,6 +947,7 @@ impl QueryExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::models::ColumnReferenceExpression;
     use crate::metastore::ColumnMetadata;
     use std::io::Write;
     use tempfile::tempdir;
@@ -638,6 +959,29 @@ mod tests {
 
     fn create_persistent_metastore(dir: &std::path::Path) -> Arc<Metastore> {
         Arc::new(Metastore::new(dir).unwrap())
+    }
+
+    /// Create a SelectQuery that selects all columns from a table
+    fn select_all_columns(metastore: &Metastore, table_name: &str) -> SelectQuery {
+        let table_meta = metastore
+            .get_table_by_name(table_name)
+            .expect("Table not found in metastore");
+
+        SelectQuery {
+            column_clauses: table_meta
+                .columns
+                .iter()
+                .map(|col| {
+                    ColumnExpression::ColumnReference(ColumnReferenceExpression {
+                        table_name: table_name.to_string(),
+                        column_name: col.name.clone(),
+                    })
+                })
+                .collect(),
+            where_clause: None,
+            order_by_clause: None,
+            limit_clause: None,
+        }
     }
 
     #[tokio::test]
@@ -659,11 +1003,9 @@ mod tests {
             .create_table("users".to_string(), columns)
             .unwrap();
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
-        let query_def = QueryDefinition::Select(SelectQuery {
-            table_name: "users".to_string(),
-        });
+        let query_def = QueryDefinition::Select(select_all_columns(&metastore, "users"));
 
         let query_id = executor.submit_query(query_def).unwrap();
         executor.wait_for_completion(&query_id).await.unwrap();
@@ -681,7 +1023,15 @@ mod tests {
         let executor = QueryExecutor::new(metastore);
 
         let query_def = QueryDefinition::Select(SelectQuery {
-            table_name: "nonexistent".to_string(),
+            column_clauses: vec![ColumnExpression::ColumnReference(
+                ColumnReferenceExpression {
+                    table_name: "nonexistent".to_string(),
+                    column_name: "id".to_string(),
+                },
+            )],
+            where_clause: None,
+            order_by_clause: None,
+            limit_clause: None,
         });
 
         let result = executor.submit_query(query_def);
@@ -716,7 +1066,7 @@ mod tests {
         writeln!(file, "2,Bob").unwrap();
         writeln!(file, "3,Charlie").unwrap();
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
         // Execute COPY
         let copy_def = QueryDefinition::Copy(CopyQuery {
@@ -732,9 +1082,7 @@ mod tests {
         assert_eq!(copy_state.status, QueryStatus::Completed);
 
         // Execute SELECT
-        let select_def = QueryDefinition::Select(SelectQuery {
-            table_name: "users".to_string(),
-        });
+        let select_def = QueryDefinition::Select(select_all_columns(&metastore, "users"));
 
         let select_id = executor.submit_query(select_def).unwrap();
         executor.wait_for_completion(&select_id).await.unwrap();
@@ -772,7 +1120,7 @@ mod tests {
         writeln!(file, "100,John").unwrap();
         writeln!(file, "200,Jane").unwrap();
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
         let copy_def = QueryDefinition::Copy(CopyQuery {
             source_filepath: csv_path.to_str().unwrap().to_string(),
@@ -787,9 +1135,7 @@ mod tests {
         assert_eq!(query.status, QueryStatus::Completed);
 
         // Select and verify
-        let select_def = QueryDefinition::Select(SelectQuery {
-            table_name: "employees".to_string(),
-        });
+        let select_def = QueryDefinition::Select(select_all_columns(&metastore, "employees"));
         let select_id = executor.submit_query(select_def).unwrap();
         executor.wait_for_completion(&select_id).await.unwrap();
         let result = executor.get_result(&select_id, None).unwrap().unwrap();
@@ -856,7 +1202,7 @@ mod tests {
             .create_table("numbers".to_string(), columns)
             .unwrap();
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
         // First COPY
         let csv1_path = dir.path().join("numbers1.csv");
@@ -890,9 +1236,7 @@ mod tests {
         executor.wait_for_completion(&copy2_id).await.unwrap();
 
         // SELECT should return all rows from both COPY operations
-        let select_def = QueryDefinition::Select(SelectQuery {
-            table_name: "numbers".to_string(),
-        });
+        let select_def = QueryDefinition::Select(select_all_columns(&metastore, "numbers"));
         let select_id = executor.submit_query(select_def).unwrap();
         executor.wait_for_completion(&select_id).await.unwrap();
         let result = executor.get_result(&select_id, None).unwrap().unwrap();
@@ -919,7 +1263,7 @@ mod tests {
             writeln!(file, "{}", i).unwrap();
         }
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
         // COPY
         let copy_def = QueryDefinition::Copy(CopyQuery {
@@ -932,9 +1276,7 @@ mod tests {
         executor.wait_for_completion(&copy_id).await.unwrap();
 
         // SELECT
-        let select_def = QueryDefinition::Select(SelectQuery {
-            table_name: "data".to_string(),
-        });
+        let select_def = QueryDefinition::Select(select_all_columns(&metastore, "data"));
         let select_id = executor.submit_query(select_def).unwrap();
         executor.wait_for_completion(&select_id).await.unwrap();
 
@@ -965,15 +1307,11 @@ mod tests {
         }];
         metastore.create_table("test".to_string(), columns).unwrap();
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
         // Submit multiple queries
-        let select1 = QueryDefinition::Select(SelectQuery {
-            table_name: "test".to_string(),
-        });
-        let select2 = QueryDefinition::Select(SelectQuery {
-            table_name: "test".to_string(),
-        });
+        let select1 = QueryDefinition::Select(select_all_columns(&metastore, "test"));
+        let select2 = QueryDefinition::Select(select_all_columns(&metastore, "test"));
 
         let id1 = executor.submit_query(select1).unwrap();
         let id2 = executor.submit_query(select2).unwrap();
@@ -1017,7 +1355,7 @@ mod tests {
         }];
         metastore.create_table("test".to_string(), columns).unwrap();
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
         let copy_def = QueryDefinition::Copy(CopyQuery {
             source_filepath: "/nonexistent/path/file.csv".to_string(),
@@ -1034,7 +1372,7 @@ mod tests {
     #[test]
     fn test_copy_to_nonexistent_table() {
         let metastore = create_test_metastore();
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
         let copy_def = QueryDefinition::Copy(CopyQuery {
             source_filepath: "/some/file.csv".to_string(),
@@ -1073,7 +1411,7 @@ mod tests {
         writeln!(file, "2,Special chars: äöü").unwrap();
         writeln!(file, "3,").unwrap(); // empty string
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
         let copy_def = QueryDefinition::Copy(CopyQuery {
             source_filepath: csv_path.to_str().unwrap().to_string(),
@@ -1084,9 +1422,7 @@ mod tests {
         let copy_id = executor.submit_query(copy_def).unwrap();
         executor.wait_for_completion(&copy_id).await.unwrap();
 
-        let select_def = QueryDefinition::Select(SelectQuery {
-            table_name: "strings".to_string(),
-        });
+        let select_def = QueryDefinition::Select(select_all_columns(&metastore, "strings"));
         let select_id = executor.submit_query(select_def).unwrap();
         executor.wait_for_completion(&select_id).await.unwrap();
         let result = executor.get_result(&select_id, None).unwrap().unwrap();
@@ -1113,11 +1449,9 @@ mod tests {
         }];
         metastore.create_table("test".to_string(), columns).unwrap();
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
-        let select_def = QueryDefinition::Select(SelectQuery {
-            table_name: "test".to_string(),
-        });
+        let select_def = QueryDefinition::Select(select_all_columns(&metastore, "test"));
         let query_id = executor.submit_query(select_def).unwrap();
         executor.wait_for_completion(&query_id).await.unwrap();
 
@@ -1151,7 +1485,7 @@ mod tests {
         writeln!(file, "2,").unwrap(); // Empty INT64 value
         writeln!(file, "3,300").unwrap();
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
         let copy_def = QueryDefinition::Copy(CopyQuery {
             source_filepath: csv_path.to_str().unwrap().to_string(),
@@ -1199,7 +1533,7 @@ mod tests {
         writeln!(file, "2,Bob").unwrap(); // Missing third column
         writeln!(file, "3,Charlie,300").unwrap();
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
         let copy_def = QueryDefinition::Copy(CopyQuery {
             source_filepath: csv_path.to_str().unwrap().to_string(),
@@ -1234,7 +1568,7 @@ mod tests {
         writeln!(file, "abc").unwrap(); // Invalid INT64 value
         writeln!(file, "3").unwrap();
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
         let copy_def = QueryDefinition::Copy(CopyQuery {
             source_filepath: csv_path.to_str().unwrap().to_string(),
@@ -1277,7 +1611,7 @@ mod tests {
         writeln!(file, "1,Alice,extra1,extra2").unwrap();
         writeln!(file, "2,Bob,extra3,extra4").unwrap();
 
-        let executor = QueryExecutor::new(metastore);
+        let executor = QueryExecutor::new(metastore.clone());
 
         let copy_def = QueryDefinition::Copy(CopyQuery {
             source_filepath: csv_path.to_str().unwrap().to_string(),
@@ -1293,9 +1627,7 @@ mod tests {
         assert_eq!(query.status, QueryStatus::Completed);
 
         // Verify data was loaded correctly
-        let select_def = QueryDefinition::Select(SelectQuery {
-            table_name: "test".to_string(),
-        });
+        let select_def = QueryDefinition::Select(select_all_columns(&metastore, "test"));
         let select_id = executor.submit_query(select_def).unwrap();
         executor.wait_for_completion(&select_id).await.unwrap();
         let result = executor.get_result(&select_id, None).unwrap().unwrap();
