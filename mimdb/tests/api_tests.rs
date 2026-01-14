@@ -273,7 +273,7 @@ async fn test_select_query_on_empty_table() {
 
     let result: serde_json::Value = resp.json();
     assert!(result.is_array());
-    assert_eq!(result[0]["rowCount"], 0);
+    assert_eq!(result.as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -1183,8 +1183,7 @@ async fn test_select_with_where_no_matches() {
 
     let result: serde_json::Value = resp.json();
     assert!(result.is_array());
-    // Should return 0 rows
-    assert_eq!(result[0]["rowCount"], 0);
+    assert_eq!(result.as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
@@ -1513,7 +1512,7 @@ async fn test_select_with_limit_zero() {
 
     let result: serde_json::Value = resp.json();
     assert!(result.is_array());
-    assert_eq!(result[0]["rowCount"], 0);
+    assert_eq!(result.as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]

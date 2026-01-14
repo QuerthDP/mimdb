@@ -33,19 +33,51 @@ pub struct EvaluationContext<'a> {
     pub columns: HashMap<(String, String), &'a ColumnData>,
     /// Total number of rows in the data
     pub row_count: usize,
+    /// Default table name to use when column reference has no table name
+    pub default_table: Option<String>,
 }
 
 impl<'a> EvaluationContext<'a> {
     pub fn new(columns: HashMap<(String, String), &'a ColumnData>, row_count: usize) -> Self {
-        Self { columns, row_count }
+        Self {
+            columns,
+            row_count,
+            default_table: None,
+        }
     }
 
-    pub fn get_column_data(&self, table_name: &str, column_name: &str) -> Result<&'a ColumnData> {
-        let key = (table_name.to_string(), column_name.to_string());
+    pub fn with_default_table(
+        columns: HashMap<(String, String), &'a ColumnData>,
+        row_count: usize,
+        default_table: String,
+    ) -> Self {
+        Self {
+            columns,
+            row_count,
+            default_table: Some(default_table),
+        }
+    }
+
+    pub fn get_column_data(
+        &self,
+        table_name: Option<&str>,
+        column_name: &str,
+    ) -> Result<&'a ColumnData> {
+        let resolved_table = table_name
+            .map(|s| s.to_string())
+            .or_else(|| self.default_table.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Column '{}' has no table name and no default table is available",
+                    column_name
+                )
+            })?;
+
+        let key = (resolved_table.clone(), column_name.to_string());
         self.columns
             .get(&key)
             .copied()
-            .ok_or_else(|| anyhow::anyhow!("Column '{}.{}' not found", table_name, column_name))
+            .ok_or_else(|| anyhow::anyhow!("Column '{}.{}' not found", resolved_table, column_name))
     }
 }
 
@@ -80,7 +112,7 @@ impl ExpressionEvaluator {
         col_ref: &ColumnReferenceExpression,
         ctx: &EvaluationContext,
     ) -> Result<ColumnData> {
-        let data = ctx.get_column_data(&col_ref.table_name, &col_ref.column_name)?;
+        let data = ctx.get_column_data(col_ref.table_name.as_deref(), &col_ref.column_name)?;
         Ok(data.clone())
     }
 
@@ -289,6 +321,7 @@ impl ExpressionEvaluator {
     pub fn infer_type(
         expr: &ColumnExpression,
         column_types: &HashMap<(String, String), ColumnType>,
+        default_table: Option<&str>,
     ) -> Result<ColumnType> {
         match expr {
             ColumnExpression::Literal(lit) => match &lit.value {
@@ -297,13 +330,20 @@ impl ExpressionEvaluator {
                 LiteralValue::Bool(_) => Ok(ColumnType::Bool),
             },
             ColumnExpression::ColumnReference(col_ref) => {
-                let key = (col_ref.table_name.clone(), col_ref.column_name.clone());
+                let table_name =
+                    col_ref
+                        .table_name
+                        .as_deref()
+                        .or(default_table)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Column '{}' has no table name and no default table is available",
+                                col_ref.column_name
+                            )
+                        })?;
+                let key = (table_name.to_string(), col_ref.column_name.clone());
                 column_types.get(&key).cloned().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "Column '{}.{}' not found",
-                        col_ref.table_name,
-                        col_ref.column_name
-                    )
+                    anyhow::anyhow!("Column '{}.{}' not found", table_name, col_ref.column_name)
                 })
             }
             ColumnExpression::Function(func) => match func.function_name {
@@ -344,7 +384,9 @@ pub fn collect_table_references(expr: &ColumnExpression) -> HashSet<String> {
 fn collect_table_references_recursive(expr: &ColumnExpression, tables: &mut HashSet<String>) {
     match expr {
         ColumnExpression::ColumnReference(col_ref) => {
-            tables.insert(col_ref.table_name.clone());
+            if let Some(ref table_name) = col_ref.table_name {
+                tables.insert(table_name.clone());
+            }
         }
         ColumnExpression::Function(func) => {
             for arg in &func.arguments {
@@ -646,10 +688,10 @@ mod tests {
         let data = ColumnData::Int64(vec![10, 20, 30]);
         let mut columns = HashMap::new();
         columns.insert(("users".to_string(), "age".to_string()), &data);
-        let ctx = EvaluationContext::new(columns, 3);
+        let ctx = EvaluationContext::with_default_table(columns, 3, "users".to_string());
 
         let col_ref = ColumnExpression::ColumnReference(ColumnReferenceExpression {
-            table_name: "users".to_string(),
+            table_name: Some("users".to_string()),
             column_name: "age".to_string(),
         });
 

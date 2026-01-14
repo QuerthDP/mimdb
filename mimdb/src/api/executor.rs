@@ -126,8 +126,14 @@ pub struct QueryExecutor {
 }
 
 /// Extract the single table name referenced in a SELECT query.
-/// Returns an error if no tables or multiple tables are referenced.
-fn extract_single_table_reference(select_query: &SelectQuery) -> Result<String> {
+/// If explicit table names are provided, use them.
+/// If no explicit table names, this function collects column names from expressions
+/// and uses the provided metastore to find a matching table.
+/// If no column references exist use any existing table.
+fn extract_single_table_reference(
+    select_query: &SelectQuery,
+    metastore: &Metastore,
+) -> Result<String> {
     let mut table_names = HashSet::new();
     for expr in &select_query.column_clauses {
         table_names.extend(collect_table_references(expr));
@@ -136,9 +142,6 @@ fn extract_single_table_reference(select_query: &SelectQuery) -> Result<String> 
         table_names.extend(collect_table_references(where_clause));
     }
 
-    if table_names.is_empty() {
-        anyhow::bail!("SELECT query must reference at least one table");
-    }
     if table_names.len() > 1 {
         anyhow::bail!(
             "SELECT query references multiple tables ({:?}), but only single-table queries are supported",
@@ -146,7 +149,50 @@ fn extract_single_table_reference(select_query: &SelectQuery) -> Result<String> 
         );
     }
 
-    Ok(table_names.into_iter().next().unwrap())
+    if let Some(table_name) = table_names.into_iter().next() {
+        return Ok(table_name);
+    }
+
+    // No explicit table names found - try to infer from column names
+    let mut column_names = HashSet::new();
+    for expr in &select_query.column_clauses {
+        column_names.extend(collect_column_references(expr));
+    }
+    if let Some(ref where_clause) = select_query.where_clause {
+        column_names.extend(collect_column_references(where_clause));
+    }
+
+    // If no column references, use any available table
+    if column_names.is_empty() {
+        let tables = metastore.list_tables();
+        return match tables.into_iter().next() {
+            Some((_, table_name)) => Ok(table_name),
+            None => anyhow::bail!("No tables exist in the database"),
+        };
+    }
+
+    // Find tables that have all the referenced columns
+    let tables = metastore.list_tables();
+    let mut matching_tables = Vec::new();
+
+    for (table_id, _table_name) in &tables {
+        if let Some(table_meta) = metastore.get_table(table_id) {
+            let table_columns: HashSet<String> =
+                table_meta.columns.iter().map(|c| c.name.clone()).collect();
+            if column_names.iter().all(|c| table_columns.contains(c)) {
+                matching_tables.push(table_meta.name.clone());
+            }
+        }
+    }
+
+    match matching_tables.len() {
+        0 => anyhow::bail!("No table found containing columns: {:?}", column_names),
+        1 => Ok(matching_tables.into_iter().next().unwrap()),
+        _ => anyhow::bail!(
+            "Ambiguous column references: multiple tables ({:?}) contain the referenced columns. Please specify table names explicitly.",
+            matching_tables
+        ),
+    }
 }
 
 impl QueryExecutor {
@@ -274,10 +320,12 @@ impl QueryExecutor {
                 .metastore
                 .get_table_by_name(&copy_query.destination_table_name)
                 .map(|t| t.table_id),
-            QueryDefinition::Select(select_query) => extract_single_table_reference(select_query)
-                .ok()
-                .and_then(|name| self.metastore.get_table_by_name(&name))
-                .map(|t| t.table_id),
+            QueryDefinition::Select(select_query) => {
+                extract_single_table_reference(select_query, &self.metastore)
+                    .ok()
+                    .and_then(|name| self.metastore.get_table_by_name(&name))
+                    .map(|t| t.table_id)
+            }
         };
 
         if let Some(ref tid) = table_id {
@@ -320,7 +368,7 @@ impl QueryExecutor {
                 }
 
                 // Extract and validate the single table reference
-                let table_name = extract_single_table_reference(select_query)?;
+                let table_name = extract_single_table_reference(select_query, &self.metastore)?;
 
                 // Check that the table exists
                 if !self.metastore.table_exists(&table_name) {
@@ -402,7 +450,7 @@ impl QueryExecutor {
 
     /// Plan a SELECT query - resolve table metadata and list data files
     fn plan_select(metastore: &Metastore, query: &SelectQuery) -> Result<SelectPlan> {
-        let table_name = extract_single_table_reference(query)?;
+        let table_name = extract_single_table_reference(query, metastore)?;
         let table_meta = metastore
             .get_table_by_name(&table_name)
             .ok_or_else(|| anyhow::anyhow!("Table '{}' not found", table_name))?;
@@ -419,17 +467,18 @@ impl QueryExecutor {
 
         // Validate column expressions
         for (i, expr) in query.column_clauses.iter().enumerate() {
-            Self::validate_expression(expr, &column_types)
+            Self::validate_expression(expr, &column_types, Some(&table_name))
                 .context(format!("Invalid column expression at index {}", i))?;
         }
 
         // Validate WHERE clause expression
         if let Some(ref where_clause) = query.where_clause {
-            Self::validate_expression(where_clause, &column_types)
+            Self::validate_expression(where_clause, &column_types, Some(&table_name))
                 .context("Invalid WHERE clause expression")?;
 
             // WHERE clause must evaluate to boolean
-            let where_type = ExpressionEvaluator::infer_type(where_clause, &column_types)?;
+            let where_type =
+                ExpressionEvaluator::infer_type(where_clause, &column_types, Some(&table_name))?;
             if where_type != ColumnType::Bool {
                 anyhow::bail!("WHERE clause must evaluate to BOOL, got {:?}", where_type);
             }
@@ -479,33 +528,41 @@ impl QueryExecutor {
     fn validate_expression(
         expr: &ColumnExpression,
         column_types: &HashMap<(String, String), ColumnType>,
+        default_table: Option<&str>,
     ) -> Result<()> {
         match expr {
             ColumnReference(col_ref) => {
-                let key = (col_ref.table_name.clone(), col_ref.column_name.clone());
+                let table_name =
+                    col_ref
+                        .table_name
+                        .as_deref()
+                        .or(default_table)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Column '{}' has no table name and no default table is available",
+                                col_ref.column_name
+                            )
+                        })?;
+                let key = (table_name.to_string(), col_ref.column_name.clone());
                 if !column_types.contains_key(&key) {
-                    anyhow::bail!(
-                        "Column '{}.{}' not found",
-                        col_ref.table_name,
-                        col_ref.column_name
-                    );
+                    anyhow::bail!("Column '{}.{}' not found", table_name, col_ref.column_name);
                 }
                 Ok(())
             }
             Literal(_) => Ok(()),
             Function(func) => {
                 for arg in &func.arguments {
-                    Self::validate_expression(arg, column_types)?;
+                    Self::validate_expression(arg, column_types, default_table)?;
                 }
                 Ok(())
             }
             BinaryOperation(bin_op) => {
-                Self::validate_expression(&bin_op.left_operand, column_types)?;
-                Self::validate_expression(&bin_op.right_operand, column_types)?;
+                Self::validate_expression(&bin_op.left_operand, column_types, default_table)?;
+                Self::validate_expression(&bin_op.right_operand, column_types, default_table)?;
                 Ok(())
             }
             UnaryOperation(unary_op) => {
-                Self::validate_expression(&unary_op.operand, column_types)?;
+                Self::validate_expression(&unary_op.operand, column_types, default_table)?;
                 Ok(())
             }
         }
@@ -697,6 +754,11 @@ impl QueryExecutor {
             ordered_indices
         };
 
+        // Return empty result if no rows
+        if final_indices.is_empty() {
+            return Ok(vec![]);
+        }
+
         // Reorder result columns based on final indices
         let final_columns: Vec<ResultColumn> = result_columns
             .into_iter()
@@ -725,7 +787,11 @@ impl QueryExecutor {
             for (col_name, data) in &columns {
                 column_map.insert((table_name.to_string(), col_name.clone()), data);
             }
-            let ctx = EvaluationContext::new(column_map, row_count);
+            let ctx = EvaluationContext::with_default_table(
+                column_map,
+                row_count,
+                table_name.to_string(),
+            );
 
             // Evaluate WHERE clause to get filter mask
             let filter_result = ExpressionEvaluator::evaluate(where_expr, &ctx)?;
@@ -766,7 +832,11 @@ impl QueryExecutor {
         for (col_name, data) in &final_columns {
             column_map.insert((table_name.to_string(), col_name.clone()), data);
         }
-        let ctx = EvaluationContext::new(column_map, final_row_count);
+        let ctx = EvaluationContext::with_default_table(
+            column_map,
+            final_row_count,
+            table_name.to_string(),
+        );
 
         column_clauses
             .iter()
@@ -978,7 +1048,7 @@ mod tests {
                 .iter()
                 .map(|col| {
                     ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                        table_name: table_name.to_string(),
+                        table_name: Some(table_name.to_string()),
                         column_name: col.name.clone(),
                     })
                 })
@@ -1018,8 +1088,7 @@ mod tests {
 
         assert!(result.is_some());
         let result = result.unwrap();
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0].row_count, 0);
+        assert_eq!(result.len(), 0);
     }
 
     #[test]
@@ -1030,7 +1099,7 @@ mod tests {
         let query_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![ColumnExpression::ColumnReference(
                 ColumnReferenceExpression {
-                    table_name: "nonexistent".to_string(),
+                    table_name: Some("nonexistent".to_string()),
                     column_name: "id".to_string(),
                 },
             )],
@@ -1688,18 +1757,18 @@ mod tests {
         let select_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "orders".to_string(),
+                    table_name: Some("orders".to_string()),
                     column_name: "id".to_string(),
                 }),
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "orders".to_string(),
+                    table_name: Some("orders".to_string()),
                     column_name: "status".to_string(),
                 }),
             ],
             where_clause: Some(ColumnExpression::BinaryOperation(ColumnarBinaryOperation {
                 left_operand: Box::new(ColumnExpression::ColumnReference(
                     ColumnReferenceExpression {
-                        table_name: "orders".to_string(),
+                        table_name: Some("orders".to_string()),
                         column_name: "status".to_string(),
                     },
                 )),
@@ -1763,18 +1832,18 @@ mod tests {
         let select_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "employees".to_string(),
+                    table_name: Some("employees".to_string()),
                     column_name: "id".to_string(),
                 }),
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "employees".to_string(),
+                    table_name: Some("employees".to_string()),
                     column_name: "salary".to_string(),
                 }),
             ],
             where_clause: Some(ColumnExpression::BinaryOperation(ColumnarBinaryOperation {
                 left_operand: Box::new(ColumnExpression::ColumnReference(
                     ColumnReferenceExpression {
-                        table_name: "employees".to_string(),
+                        table_name: Some("employees".to_string()),
                         column_name: "salary".to_string(),
                     },
                 )),
@@ -1829,14 +1898,14 @@ mod tests {
         let select_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![ColumnExpression::ColumnReference(
                 ColumnReferenceExpression {
-                    table_name: "numbers".to_string(),
+                    table_name: Some("numbers".to_string()),
                     column_name: "value".to_string(),
                 },
             )],
             where_clause: Some(ColumnExpression::BinaryOperation(ColumnarBinaryOperation {
                 left_operand: Box::new(ColumnExpression::ColumnReference(
                     ColumnReferenceExpression {
-                        table_name: "numbers".to_string(),
+                        table_name: Some("numbers".to_string()),
                         column_name: "value".to_string(),
                     },
                 )),
@@ -1853,8 +1922,8 @@ mod tests {
         executor.wait_for_completion(&select_id).await.unwrap();
         let result = executor.get_result(&select_id, None).unwrap().unwrap();
 
-        // Should return 0 rows
-        assert_eq!(result[0].row_count, 0);
+        // Should return empty result array (no rows match WHERE)
+        assert_eq!(result.len(), 0);
     }
 
     // ========================================================================
@@ -1907,11 +1976,11 @@ mod tests {
         let select_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "scores".to_string(),
+                    table_name: Some("scores".to_string()),
                     column_name: "id".to_string(),
                 }),
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "scores".to_string(),
+                    table_name: Some("scores".to_string()),
                     column_name: "score".to_string(),
                 }),
             ],
@@ -1977,11 +2046,11 @@ mod tests {
         let select_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "products".to_string(),
+                    table_name: Some("products".to_string()),
                     column_name: "product".to_string(),
                 }),
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "products".to_string(),
+                    table_name: Some("products".to_string()),
                     column_name: "price".to_string(),
                 }),
             ],
@@ -2051,11 +2120,11 @@ mod tests {
         let select_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "staff".to_string(),
+                    table_name: Some("staff".to_string()),
                     column_name: "department".to_string(),
                 }),
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "staff".to_string(),
+                    table_name: Some("staff".to_string()),
                     column_name: "salary".to_string(),
                 }),
             ],
@@ -2126,7 +2195,7 @@ mod tests {
         let select_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![ColumnExpression::ColumnReference(
                 ColumnReferenceExpression {
-                    table_name: "cities".to_string(),
+                    table_name: Some("cities".to_string()),
                     column_name: "city".to_string(),
                 },
             )],
@@ -2189,7 +2258,7 @@ mod tests {
         let select_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![ColumnExpression::ColumnReference(
                 ColumnReferenceExpression {
-                    table_name: "numbers".to_string(),
+                    table_name: Some("numbers".to_string()),
                     column_name: "value".to_string(),
                 },
             )],
@@ -2243,7 +2312,7 @@ mod tests {
         let select_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![ColumnExpression::ColumnReference(
                 ColumnReferenceExpression {
-                    table_name: "data".to_string(),
+                    table_name: Some("data".to_string()),
                     column_name: "value".to_string(),
                 },
             )],
@@ -2291,7 +2360,7 @@ mod tests {
         let select_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![ColumnExpression::ColumnReference(
                 ColumnReferenceExpression {
-                    table_name: "test".to_string(),
+                    table_name: Some("test".to_string()),
                     column_name: "value".to_string(),
                 },
             )],
@@ -2304,8 +2373,8 @@ mod tests {
         executor.wait_for_completion(&select_id).await.unwrap();
         let result = executor.get_result(&select_id, None).unwrap().unwrap();
 
-        // Should return 0 rows
-        assert_eq!(result[0].row_count, 0);
+        // Should return empty result array (LIMIT 0)
+        assert_eq!(result.len(), 0);
     }
 
     // ========================================================================
@@ -2360,18 +2429,18 @@ mod tests {
         let select_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "items".to_string(),
+                    table_name: Some("items".to_string()),
                     column_name: "id".to_string(),
                 }),
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "items".to_string(),
+                    table_name: Some("items".to_string()),
                     column_name: "price".to_string(),
                 }),
             ],
             where_clause: Some(ColumnExpression::BinaryOperation(ColumnarBinaryOperation {
                 left_operand: Box::new(ColumnExpression::ColumnReference(
                     ColumnReferenceExpression {
-                        table_name: "items".to_string(),
+                        table_name: Some("items".to_string()),
                         column_name: "category".to_string(),
                     },
                 )),
@@ -2447,18 +2516,18 @@ mod tests {
         let select_def = QueryDefinition::Select(SelectQuery {
             column_clauses: vec![
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "records".to_string(),
+                    table_name: Some("records".to_string()),
                     column_name: "status".to_string(),
                 }),
                 ColumnExpression::ColumnReference(ColumnReferenceExpression {
-                    table_name: "records".to_string(),
+                    table_name: Some("records".to_string()),
                     column_name: "value".to_string(),
                 }),
             ],
             where_clause: Some(ColumnExpression::BinaryOperation(ColumnarBinaryOperation {
                 left_operand: Box::new(ColumnExpression::ColumnReference(
                     ColumnReferenceExpression {
-                        table_name: "records".to_string(),
+                        table_name: Some("records".to_string()),
                         column_name: "status".to_string(),
                     },
                 )),

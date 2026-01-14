@@ -140,7 +140,8 @@ pub enum ColumnExpression {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnReferenceExpression {
-    pub table_name: String,
+    #[serde(default)]
+    pub table_name: Option<String>,
     pub column_name: String,
 }
 
