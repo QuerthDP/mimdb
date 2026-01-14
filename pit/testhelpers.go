@@ -9,6 +9,7 @@ import (
 	"time"
 
 	apiclient "github.com/smogork/ISBD-MIMUW/pit/client"
+	"github.com/docker/go-connections/nat"
 	tc "github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -77,10 +78,16 @@ func StartTestContainer(ctx context.Context) (string, func(), error) {
 		image = "isbd-mimuw-db:latest"
 	}
 
+	port := os.Getenv("DB_PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	portSpec := port + "/tcp"
 	req := tc.ContainerRequest{
 		Image:        image,
-		ExposedPorts: []string{"8080/tcp"},
-		WaitingFor:   wait.ForHTTP("/system/info").WithPort("8080/tcp").WithStartupTimeout(30 * time.Second),
+		ExposedPorts: []string{portSpec},
+		WaitingFor:   wait.ForHTTP("/system/info").WithPort(nat.Port(portSpec)).WithStartupTimeout(30 * time.Second),
 	}
 
 	cont, err := tc.GenericContainer(ctx, tc.GenericContainerRequest{ContainerRequest: req, Started: true})
@@ -93,7 +100,7 @@ func StartTestContainer(ctx context.Context) (string, func(), error) {
 		_ = cont.Terminate(ctx)
 		return "", nil, err
 	}
-	mp, err := cont.MappedPort(ctx, "8080/tcp")
+	mp, err := cont.MappedPort(ctx, nat.Port(portSpec))
 	if err != nil {
 		_ = cont.Terminate(ctx)
 		return "", nil, err
