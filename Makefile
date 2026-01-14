@@ -61,8 +61,12 @@ check:
 clippy:
 	cargo clippy --all-targets --workspace -- -Dwarnings
 
+# Run Go integration tests
+pit-test: docker
+	cd pit && go test ./tests -db-run-docker true -v --db-image mimdb:latest --db-port 3000
+
 # Run CI checks
-ci: fmt check clippy test
+ci: fmt check clippy test pit-test
 
 # Help target
 help:
@@ -81,5 +85,6 @@ help:
 	@echo "  fmt         - Format code"
 	@echo "  check       - Check code"
 	@echo "  clippy      - Run clippy"
+	@echo "  pit-test    - Run Go integration tests"
 	@echo "  ci          - Run CI checks"
 	@echo "  help        - Show this help message"
