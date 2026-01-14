@@ -97,28 +97,28 @@ func TestFunctional_ComparisonOperators(t *testing.T) {
 
 	// Not Equal
 	runner.AddCase("INT64_NotEqual",
-		"SELECT int_col <> 2 FROM types_test ORDER BY 0 ASC",
-		[][]interface{}{{false}, {true}, {true}})
+		"SELECT int_col, int_col <> 2 FROM types_test ORDER BY 0 ASC",
+		[][]interface{}{{1, true}, {2, false}, {3, true}})
 
 	// Less Than
 	runner.AddCase("INT64_LessThan",
-		"SELECT int_col < 2 FROM types_test ORDER BY 0 ASC",
-		[][]interface{}{{true}, {false}, {false}})
+		"SELECT int_col, int_col < 2 FROM types_test ORDER BY 0 ASC",
+		[][]interface{}{{1, true}, {2, false}, {3, false}})
 
 	// Less Than or Equal
 	runner.AddCase("INT64_LessEqual",
-		"SELECT int_col <= 2 FROM types_test ORDER BY 0 ASC",
-		[][]interface{}{{true}, {true}, {false}})
+		"SELECT int_col, int_col <= 2 FROM types_test ORDER BY 0 ASC",
+		[][]interface{}{{1, true}, {2, true}, {3, false}})
 
 	// Greater Than
 	runner.AddCase("INT64_GreaterThan",
-		"SELECT int_col > 2 FROM types_test ORDER BY 0 ASC",
-		[][]interface{}{{false}, {false}, {true}})
+		"SELECT int_col, int_col > 2 FROM types_test ORDER BY 0 ASC",
+		[][]interface{}{{1, false}, {2, false}, {3, true}})
 
 	// Greater Than or Equal
 	runner.AddCase("INT64_GreaterEqual",
-		"SELECT int_col >= 2 FROM types_test ORDER BY 0 ASC",
-		[][]interface{}{{false}, {true}, {true}})
+		"SELECT int_col, int_col >= 2 FROM types_test ORDER BY 0 ASC",
+		[][]interface{}{{1, false}, {2, true}, {3, true}})
 
 	runner.Run()
 }
