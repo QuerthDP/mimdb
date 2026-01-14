@@ -43,8 +43,8 @@ ColumnList <- first:Expr rest:( _ ',' _ e:Expr { return e, nil } )* {
     return buildColumnList(first, rest), nil
 }
 
-FromClause <- _ "FROM"i _ name:Identifier {
-    s := name.(string)
+FromClause <- _ "FROM"i _ first:Identifier rest:( _ ',' _ name:Identifier { return name, nil } )* {
+    s := first.(string)
     return &s, nil
 }
 
