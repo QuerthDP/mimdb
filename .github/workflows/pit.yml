@@ -32,4 +32,4 @@ jobs:
     - name: Run PIT tests
       working-directory: pit
       run: |
-        go test ./tests -db-run-docker true -v --db-image mimdb:latest --db-port 3000
+        go test ./tests -db-run-docker true -v --db-image mimdb:latest --db-port 3000 -db-memory 17179869184

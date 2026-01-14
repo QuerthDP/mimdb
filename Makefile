@@ -63,7 +63,7 @@ clippy:
 
 # Run Go integration tests
 pit-test: docker
-	cd pit && go test ./tests -db-run-docker true -v --db-image mimdb:latest --db-port 3000
+	cd pit && go test ./tests -db-run-docker true -v --db-image mimdb:latest --db-port 3000 -db-memory 1073741824
 
 # Run CI checks
 ci: fmt check clippy test pit-test
