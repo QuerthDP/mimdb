@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"time"
 
 	apiclient "github.com/smogork/ISBD-MIMUW/pit/client"
@@ -83,11 +84,21 @@ func StartTestContainer(ctx context.Context) (string, func(), error) {
 		port = "8080"
 	}
 
+	// Get absolute path to tables directory for bind mount
+	// The tables directory is at pit/tables, relative to where go test runs (pit/tests)
+	tablesDir, err := filepath.Abs(filepath.Join("..", "tables"))
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to get tables directory path: %w", err)
+	}
+
 	portSpec := port + "/tcp"
 	req := tc.ContainerRequest{
 		Image:        image,
 		ExposedPorts: []string{portSpec},
 		WaitingFor:   wait.ForHTTP("/system/info").WithPort(nat.Port(portSpec)).WithStartupTimeout(30 * time.Second),
+		Mounts: tc.Mounts(
+			tc.BindMount(tablesDir, "/data/tables"),
+		),
 	}
 
 	cont, err := tc.GenericContainer(ctx, tc.GenericContainerRequest{ContainerRequest: req, Started: true})

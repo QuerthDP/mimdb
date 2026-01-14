@@ -162,8 +162,8 @@ func SetupTestTable(t *testing.T, apiClient *apiclient.APIClient, ctx context.Co
 
 // LoadTestData loads CSV data into a table using COPY query
 func LoadTestData(t *testing.T, apiClient *apiclient.APIClient, ctx context.Context, tableName string) {
-	dataPath, err := filepath.Abs(filepath.Join("..", "tables", tableName, "data.csv"))
-	require.NoError(t, err)
+	// Use the container path where tables are mounted (see pit/testhelpers.go)
+	dataPath := fmt.Sprintf("/data/tables/%s/data.csv", tableName)
 
 	copyQuery := &apiclient.CopyQuery{
 		SourceFilepath:       dataPath,
