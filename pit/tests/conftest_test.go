@@ -203,7 +203,6 @@ func SubmitSelectQuery(apiClient *apiclient.APIClient, ctx context.Context, sql 
 }
 
 // WaitForQueryCompletion waits for a query to reach COMPLETED or FAILED status
-// After completion, it flushes the query result to release database resources
 func WaitForQueryCompletion(apiClient *apiclient.APIClient, ctx context.Context, queryId string, timeout time.Duration) (*apiclient.Query, error) {
 	deadline := time.Now().Add(timeout)
 
@@ -215,11 +214,6 @@ func WaitForQueryCompletion(apiClient *apiclient.APIClient, ctx context.Context,
 
 		status := query.GetStatus()
 		if status == apiclient.COMPLETED || status == apiclient.FAILED {
-			// Flush result to release DB resources (ignore errors)
-			flushReq := apiclient.GetQueryResultRequest{}
-			flushReq.SetFlushResult(true)
-			_, _, _ = apiClient.ExecutionAPI.GetQueryResult(ctx, queryId).GetQueryResultRequest(flushReq).Execute()
-
 			return query, nil
 		}
 
