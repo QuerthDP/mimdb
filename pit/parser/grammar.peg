@@ -70,11 +70,11 @@ LimitClause <- _ "LIMIT"i _ n:Integer {
 
 Expr <- OrExpr
 
-OrExpr <- first:AndExpr rest:( _ "OR"i _ e:AndExpr { return e, nil } )* {
+OrExpr <- first:AndExpr rest:( _ "OR"i ![a-zA-Z0-9_] _ e:AndExpr { return e, nil } )* {
     return buildBinaryChain(first, rest, "OR"), nil
 }
 
-AndExpr <- first:Comparison rest:( _ "AND"i _ e:Comparison { return e, nil } )* {
+AndExpr <- first:Comparison rest:( _ "AND"i ![a-zA-Z0-9_] _ e:Comparison { return e, nil } )* {
     return buildBinaryChain(first, rest, "AND"), nil
 }
 
