@@ -313,7 +313,7 @@ async fn test_copy_and_select_full_workflow() {
 
     // 2. Create CSV file
     let csv_path = temp_dir.path().join("employees.csv");
-    std::fs::write(&csv_path, "1,Alice,50000\n2,Bob,60000\n3,Charlie,55000\n").unwrap();
+    std::fs::write(&csv_path, "1;Alice;50000\n2;Bob;60000\n3;Charlie;55000\n").unwrap();
 
     // 3. Execute COPY query
     let copy_query = serde_json::json!({
@@ -380,7 +380,7 @@ async fn test_copy_with_header() {
 
     // Create CSV with header
     let csv_path = temp_dir.path().join("products.csv");
-    std::fs::write(&csv_path, "id,name\n1,Apple\n2,Banana\n").unwrap();
+    std::fs::write(&csv_path, "id;name\n1;Apple\n2;Banana\n").unwrap();
 
     // Execute COPY with header flag
     let copy_query = serde_json::json!({
@@ -536,7 +536,7 @@ async fn test_persistence_across_restarts() {
 
         // Add data via COPY
         let csv_path = temp_dir.path().join("data.csv");
-        std::fs::write(&csv_path, "1,test_data\n2,more_data\n").unwrap();
+        std::fs::write(&csv_path, "1;test_data\n2;more_data\n").unwrap();
 
         let copy_query = serde_json::json!({
             "queryDefinition": {
@@ -654,7 +654,7 @@ async fn test_multiple_copy_operations() {
 
     // First COPY
     let csv_path1 = temp_dir.path().join("logs1.csv");
-    std::fs::write(&csv_path1, "1,First\n2,Second\n").unwrap();
+    std::fs::write(&csv_path1, "1;First\n2;Second\n").unwrap();
 
     let copy_query1 = serde_json::json!({
         "queryDefinition": {
@@ -670,7 +670,7 @@ async fn test_multiple_copy_operations() {
 
     // Second COPY
     let csv_path2 = temp_dir.path().join("logs2.csv");
-    std::fs::write(&csv_path2, "3,Third\n4,Fourth\n5,Fifth\n").unwrap();
+    std::fs::write(&csv_path2, "3;Third\n4;Fourth\n5;Fifth\n").unwrap();
 
     let copy_query2 = serde_json::json!({
         "queryDefinition": {
@@ -808,7 +808,7 @@ async fn test_flush_result() {
 
     // 2. Create CSV file and load data
     let csv_path = temp_dir.path().join("test_flush.csv");
-    std::fs::write(&csv_path, "1,hello\n2,world\n").unwrap();
+    std::fs::write(&csv_path, "1;hello\n2;world\n").unwrap();
 
     let copy_query = serde_json::json!({
         "queryDefinition": {
@@ -913,7 +913,7 @@ async fn test_select_with_multiple_tables() {
 
     // 3. Load data into first table
     let csv_path1 = temp_dir.path().join("users.csv");
-    std::fs::write(&csv_path1, "1,Alice\n2,Bob\n").unwrap();
+    std::fs::write(&csv_path1, "1;Alice\n2;Bob\n").unwrap();
 
     let copy_query1 = serde_json::json!({
         "queryDefinition": {
@@ -931,7 +931,7 @@ async fn test_select_with_multiple_tables() {
 
     // 4. Load data into second table
     let csv_path2 = temp_dir.path().join("orders.csv");
-    std::fs::write(&csv_path2, "1,1\n2,1\n3,2\n").unwrap();
+    std::fs::write(&csv_path2, "1;1\n2;1\n3;2\n").unwrap();
 
     let copy_query2 = serde_json::json!({
         "queryDefinition": {
@@ -1014,7 +1014,7 @@ async fn test_select_with_where_equals() {
     let csv_path = temp_dir.path().join("orders.csv");
     std::fs::write(
         &csv_path,
-        "1,completed\n2,pending\n3,completed\n4,cancelled\n5,completed\n",
+        "1;completed\n2;pending\n3;completed\n4;cancelled\n5;completed\n",
     )
     .unwrap();
 
@@ -1079,7 +1079,7 @@ async fn test_select_with_where_greater_than() {
 
     // Create CSV with salary data
     let csv_path = temp_dir.path().join("employees.csv");
-    std::fs::write(&csv_path, "1,50000\n2,75000\n3,60000\n4,100000\n5,55000\n").unwrap();
+    std::fs::write(&csv_path, "1;50000\n2;75000\n3;60000\n4;100000\n5;55000\n").unwrap();
 
     // COPY data
     let copy_query = serde_json::json!({
@@ -1142,7 +1142,7 @@ async fn test_select_with_where_no_matches() {
 
     // Create CSV
     let csv_path = temp_dir.path().join("items.csv");
-    std::fs::write(&csv_path, "1,book\n2,pen\n3,book\n").unwrap();
+    std::fs::write(&csv_path, "1;book\n2;pen\n3;book\n").unwrap();
 
     // COPY data
     let copy_query = serde_json::json!({
@@ -1205,7 +1205,7 @@ async fn test_select_with_order_by_ascending() {
 
     // Create CSV with unsorted prices
     let csv_path = temp_dir.path().join("products.csv");
-    std::fs::write(&csv_path, "1,30\n2,10\n3,50\n4,20\n5,40\n").unwrap();
+    std::fs::write(&csv_path, "1;30\n2;10\n3;50\n4;20\n5;40\n").unwrap();
 
     // COPY data
     let copy_query = serde_json::json!({
@@ -1273,7 +1273,7 @@ async fn test_select_with_order_by_descending() {
 
     // Create CSV
     let csv_path = temp_dir.path().join("scores.csv");
-    std::fs::write(&csv_path, "1,85\n2,92\n3,78\n4,95\n5,88\n").unwrap();
+    std::fs::write(&csv_path, "1;85\n2;92\n3;78\n4;95\n5;88\n").unwrap();
 
     // COPY data
     let copy_query = serde_json::json!({
@@ -1342,7 +1342,7 @@ async fn test_select_with_order_by_multiple_columns() {
 
     // Create CSV with students in same grades with different scores
     let csv_path = temp_dir.path().join("students.csv");
-    std::fs::write(&csv_path, "1,10,85\n2,11,90\n3,10,95\n4,11,80\n5,10,90\n").unwrap();
+    std::fs::write(&csv_path, "1;10;85\n2;11;90\n3;10;95\n4;11;80\n5;10;90\n").unwrap();
 
     // COPY data
     let copy_query = serde_json::json!({
@@ -1594,7 +1594,7 @@ async fn test_select_with_where_order_by_limit() {
     let csv_path = temp_dir.path().join("items.csv");
     std::fs::write(
         &csv_path,
-        "1,book,20\n2,pen,5\n3,book,15\n4,pen,8\n5,book,25\n6,pen,10\n7,book,12\n",
+        "1;book;20\n2;pen;5\n3;book;15\n4;pen;8\n5;book;25\n6;pen;10\n7;book;12\n",
     )
     .unwrap();
 
@@ -1672,7 +1672,7 @@ async fn test_select_with_where_and_limit_only() {
     let csv_path = temp_dir.path().join("records.csv");
     std::fs::write(
         &csv_path,
-        "active,100\ninactive,200\nactive,150\ninactive,250\nactive,200\n",
+        "active;100\ninactive;200\nactive;150\ninactive;250\nactive;200\n",
     )
     .unwrap();
 

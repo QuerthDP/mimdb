@@ -529,6 +529,7 @@ impl QueryExecutor {
     fn execute_copy_plan(metastore: &Metastore, plan: &CopyPlan) -> Result<()> {
         // Read CSV file
         let mut reader = csv::ReaderBuilder::new()
+            .delimiter(b';')
             .has_headers(plan.has_header)
             .from_path(&plan.source_filepath)
             .context("Failed to open CSV file")?;
@@ -1066,9 +1067,9 @@ mod tests {
         // Create CSV file
         let csv_path = dir.path().join("test.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "1,Alice").unwrap();
-        writeln!(file, "2,Bob").unwrap();
-        writeln!(file, "3,Charlie").unwrap();
+        writeln!(file, "1;Alice").unwrap();
+        writeln!(file, "2;Bob").unwrap();
+        writeln!(file, "3;Charlie").unwrap();
 
         let executor = QueryExecutor::new(metastore.clone());
 
@@ -1120,9 +1121,9 @@ mod tests {
         // CSV with header
         let csv_path = dir.path().join("employees.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "id,name").unwrap();
-        writeln!(file, "100,John").unwrap();
-        writeln!(file, "200,Jane").unwrap();
+        writeln!(file, "id;name").unwrap();
+        writeln!(file, "100;John").unwrap();
+        writeln!(file, "200;Jane").unwrap();
 
         let executor = QueryExecutor::new(metastore.clone());
 
@@ -1174,8 +1175,8 @@ mod tests {
         // CSV with 2 columns (id, name)
         let csv_path = dir.path().join("persons.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "1,Alice").unwrap();
-        writeln!(file, "2,Bob").unwrap();
+        writeln!(file, "1;Alice").unwrap();
+        writeln!(file, "2;Bob").unwrap();
 
         let executor = QueryExecutor::new(metastore);
 
@@ -1411,9 +1412,9 @@ mod tests {
 
         let csv_path = dir.path().join("strings.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "1,Hello World").unwrap();
-        writeln!(file, "2,Special chars: äöü").unwrap();
-        writeln!(file, "3,").unwrap(); // empty string
+        writeln!(file, "1;Hello World").unwrap();
+        writeln!(file, "2;Special chars: äöü").unwrap();
+        writeln!(file, "3;").unwrap(); // empty string
 
         let executor = QueryExecutor::new(metastore.clone());
 
@@ -1485,9 +1486,9 @@ mod tests {
         // CSV with empty cell in INT64 column
         let csv_path = dir.path().join("empty_int.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "1,100").unwrap();
-        writeln!(file, "2,").unwrap(); // Empty INT64 value
-        writeln!(file, "3,300").unwrap();
+        writeln!(file, "1;100").unwrap();
+        writeln!(file, "2;").unwrap(); // Empty INT64 value
+        writeln!(file, "3;300").unwrap();
 
         let executor = QueryExecutor::new(metastore.clone());
 
@@ -1612,8 +1613,8 @@ mod tests {
         // CSV with more columns than the table expects - extra columns ignored
         let csv_path = dir.path().join("extra_cols.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "1,Alice,extra1,extra2").unwrap();
-        writeln!(file, "2,Bob,extra3,extra4").unwrap();
+        writeln!(file, "1;Alice;extra1;extra2").unwrap();
+        writeln!(file, "2;Bob;extra3;extra4").unwrap();
 
         let executor = QueryExecutor::new(metastore.clone());
 
@@ -1665,11 +1666,11 @@ mod tests {
         // Create CSV with mixed status values
         let csv_path = dir.path().join("orders.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "1,completed").unwrap();
-        writeln!(file, "2,pending").unwrap();
-        writeln!(file, "3,completed").unwrap();
-        writeln!(file, "4,cancelled").unwrap();
-        writeln!(file, "5,completed").unwrap();
+        writeln!(file, "1;completed").unwrap();
+        writeln!(file, "2;pending").unwrap();
+        writeln!(file, "3;completed").unwrap();
+        writeln!(file, "4;cancelled").unwrap();
+        writeln!(file, "5;completed").unwrap();
 
         let executor = QueryExecutor::new(metastore.clone());
 
@@ -1741,11 +1742,11 @@ mod tests {
         // Create CSV with salary data
         let csv_path = dir.path().join("employees.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "1,50000").unwrap();
-        writeln!(file, "2,75000").unwrap();
-        writeln!(file, "3,60000").unwrap();
-        writeln!(file, "4,100000").unwrap();
-        writeln!(file, "5,55000").unwrap();
+        writeln!(file, "1;50000").unwrap();
+        writeln!(file, "2;75000").unwrap();
+        writeln!(file, "3;60000").unwrap();
+        writeln!(file, "4;100000").unwrap();
+        writeln!(file, "5;55000").unwrap();
 
         let executor = QueryExecutor::new(metastore.clone());
 
@@ -1886,10 +1887,10 @@ mod tests {
         // Create CSV with unsorted data
         let csv_path = dir.path().join("scores.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "1,Alice,95").unwrap();
-        writeln!(file, "2,Bob,78").unwrap();
-        writeln!(file, "3,Charlie,92").unwrap();
-        writeln!(file, "4,David,85").unwrap();
+        writeln!(file, "1;Alice;95").unwrap();
+        writeln!(file, "2;Bob;78").unwrap();
+        writeln!(file, "3;Charlie;92").unwrap();
+        writeln!(file, "4;David;85").unwrap();
 
         let executor = QueryExecutor::new(metastore.clone());
 
@@ -1956,10 +1957,10 @@ mod tests {
 
         let csv_path = dir.path().join("products.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "Apple,10").unwrap();
-        writeln!(file, "Banana,5").unwrap();
-        writeln!(file, "Orange,8").unwrap();
-        writeln!(file, "Mango,15").unwrap();
+        writeln!(file, "Apple;10").unwrap();
+        writeln!(file, "Banana;5").unwrap();
+        writeln!(file, "Orange;8").unwrap();
+        writeln!(file, "Mango;15").unwrap();
 
         let executor = QueryExecutor::new(metastore.clone());
 
@@ -2030,10 +2031,10 @@ mod tests {
 
         let csv_path = dir.path().join("staff.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "Sales,50000,Alice").unwrap();
-        writeln!(file, "HR,40000,Bob").unwrap();
-        writeln!(file, "Sales,55000,Charlie").unwrap();
-        writeln!(file, "HR,45000,Diana").unwrap();
+        writeln!(file, "Sales;50000;Alice").unwrap();
+        writeln!(file, "HR;40000;Bob").unwrap();
+        writeln!(file, "Sales;55000;Charlie").unwrap();
+        writeln!(file, "HR;45000;Diana").unwrap();
 
         let executor = QueryExecutor::new(metastore.clone());
 
@@ -2336,13 +2337,13 @@ mod tests {
 
         let csv_path = dir.path().join("items.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "1,book,20").unwrap();
-        writeln!(file, "2,pen,5").unwrap();
-        writeln!(file, "3,book,15").unwrap();
-        writeln!(file, "4,pen,8").unwrap();
-        writeln!(file, "5,book,25").unwrap();
-        writeln!(file, "6,pen,10").unwrap();
-        writeln!(file, "7,book,12").unwrap();
+        writeln!(file, "1;book;20").unwrap();
+        writeln!(file, "2;pen;5").unwrap();
+        writeln!(file, "3;book;15").unwrap();
+        writeln!(file, "4;pen;8").unwrap();
+        writeln!(file, "5;book;25").unwrap();
+        writeln!(file, "6;pen;10").unwrap();
+        writeln!(file, "7;book;12").unwrap();
 
         let executor = QueryExecutor::new(metastore.clone());
 
@@ -2425,11 +2426,11 @@ mod tests {
 
         let csv_path = dir.path().join("records.csv");
         let mut file = std::fs::File::create(&csv_path).unwrap();
-        writeln!(file, "active,100").unwrap();
-        writeln!(file, "inactive,200").unwrap();
-        writeln!(file, "active,150").unwrap();
-        writeln!(file, "inactive,250").unwrap();
-        writeln!(file, "active,200").unwrap();
+        writeln!(file, "active;100").unwrap();
+        writeln!(file, "inactive;200").unwrap();
+        writeln!(file, "active;150").unwrap();
+        writeln!(file, "inactive;250").unwrap();
+        writeln!(file, "active;200").unwrap();
 
         let executor = QueryExecutor::new(metastore.clone());
 

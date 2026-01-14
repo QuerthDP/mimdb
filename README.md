@@ -283,9 +283,9 @@ echo "Created table: $TABLE_ID"
 
 ### 2. Prepare CSV file (in /data directory when using Docker)
 ```bash
-echo "1,Alice,50000" > /data/employees.csv
-echo "2,Bob,60000" >> /data/employees.csv
-echo "3,Charlie,55000" >> /data/employees.csv
+echo "1;Alice;50000" > /data/employees.csv
+echo "2;Bob;60000" >> /data/employees.csv
+echo "3;Charlie;55000" >> /data/employees.csv
 ```
 
 ### 3. Load CSV data into table
