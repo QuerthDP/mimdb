@@ -1,0 +1,4 @@
+id      INT64
+name    VARCHAR
+surname VARCHAR
+age     INT64

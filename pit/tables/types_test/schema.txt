@@ -1,0 +1,2 @@
+int_col     INT64
+varchar_col VARCHAR
