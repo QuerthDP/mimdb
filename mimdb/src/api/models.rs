@@ -126,7 +126,7 @@ pub struct SelectQuery {
 // ============================================================================
 
 /// Column expression - describes a single column in a SELECT query
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(untagged)]
 pub enum ColumnExpression {
     BinaryOperation(ColumnarBinaryOperation),
@@ -137,7 +137,7 @@ pub enum ColumnExpression {
 }
 
 /// Reference to a column in a table
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnReferenceExpression {
     #[serde(default)]
@@ -146,13 +146,13 @@ pub struct ColumnReferenceExpression {
 }
 
 /// Literal value
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Literal {
     pub value: LiteralValue,
 }
 
 /// The actual value of a literal
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(untagged)]
 pub enum LiteralValue {
     Int64(i64),
@@ -161,7 +161,7 @@ pub enum LiteralValue {
 }
 
 /// Function types supported in column expressions
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FunctionName {
     Strlen,
@@ -172,7 +172,7 @@ pub enum FunctionName {
 }
 
 /// Function call in a column expression
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct Function {
     pub function_name: FunctionName,
@@ -180,7 +180,7 @@ pub struct Function {
 }
 
 /// Binary operators for column expressions
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum BinaryOperator {
     Add,
@@ -198,7 +198,7 @@ pub enum BinaryOperator {
 }
 
 /// Binary operation in a column expression
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnarBinaryOperation {
     pub operator: BinaryOperator,
@@ -207,7 +207,7 @@ pub struct ColumnarBinaryOperation {
 }
 
 /// Unary operators for column expressions
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum UnaryOperator {
     Not,
@@ -215,7 +215,7 @@ pub enum UnaryOperator {
 }
 
 /// Unary operation in a column expression
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnarUnaryOperation {
     pub operator: UnaryOperator,

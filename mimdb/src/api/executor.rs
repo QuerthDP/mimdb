@@ -13,9 +13,11 @@
 use crate::ColumnData;
 use crate::ColumnType;
 use crate::Table;
+use crate::api::expression::CseContext;
 use crate::api::expression::EvaluationContext;
 use crate::api::expression::ExpressionEvaluator;
 use crate::api::expression::collect_column_references;
+use crate::api::expression::collect_subexpressions;
 use crate::api::expression::collect_table_references;
 use crate::api::models::ColumnExpression;
 use crate::api::models::ColumnExpression::BinaryOperation;
@@ -771,6 +773,14 @@ impl QueryExecutor {
     }
 
     /// Filter rows based on WHERE clause and evaluate column expressions
+    /// Uses Common Subexpression Elimination (CSE) to avoid redundant computation
+    /// of expressions that appear in both WHERE and SELECT clauses.
+    ///
+    /// The CSE optimization works as follows:
+    /// 1. Find expressions that are common between WHERE and SELECT
+    /// 2. Pre-compute these common expressions before filtering (input projection)
+    /// 3. Use the pre-computed values during filtering
+    /// 4. After filtering, reuse the pre-computed values for SELECT evaluation
     fn filter_and_evaluate(
         table_name: &str,
         columns: HashMap<String, ColumnData>,
@@ -779,52 +789,101 @@ impl QueryExecutor {
         column_clauses: &[ColumnExpression],
         early_limit: Option<usize>,
     ) -> Result<Vec<ColumnData>> {
-        // Determine final columns and row count based on WHERE clause and limit
-        let (final_columns, final_row_count) = if let Some(where_expr) = where_clause {
-            // Build context for WHERE evaluation
-            let mut column_map = HashMap::new();
-            for (col_name, data) in &columns {
-                column_map.insert((table_name.to_string(), col_name.clone()), data);
+        // Build base context for expression evaluation
+        let mut base_column_map = HashMap::new();
+        for (col_name, data) in &columns {
+            base_column_map.insert((table_name.to_string(), col_name.clone()), data);
+        }
+
+        let common_expr_hashes: HashSet<u64> = if let Some(where_expr) = where_clause {
+            // Collect subexpressions from WHERE
+            let where_subexprs = collect_subexpressions(where_expr);
+            let where_hashes: HashSet<u64> = where_subexprs.keys().cloned().collect();
+
+            // Collect subexpressions from all SELECT clauses
+            let mut select_hashes: HashSet<u64> = HashSet::new();
+            for expr in column_clauses {
+                let subexprs = collect_subexpressions(expr);
+                select_hashes.extend(subexprs.keys().cloned());
             }
+
+            where_hashes.intersection(&select_hashes).cloned().collect()
+        } else {
+            HashSet::new()
+        };
+
+        let mut pre_computed: HashMap<u64, ColumnData> = HashMap::new();
+
+        if !common_expr_hashes.is_empty()
+            && let Some(where_expr) = where_clause
+        {
             let ctx = EvaluationContext::with_default_table(
-                column_map,
+                base_column_map.clone(),
                 row_count,
                 table_name.to_string(),
             );
+            let mut cse = CseContext::new();
 
-            // Evaluate WHERE clause to get filter mask
-            let filter_result = ExpressionEvaluator::evaluate(where_expr, &ctx)?;
-            let passing_indices: Vec<usize> = match filter_result {
-                ColumnData::Bool(mask) => {
-                    let iter = mask
-                        .into_iter()
-                        .enumerate()
-                        .filter_map(|(i, passes)| if passes { Some(i) } else { None });
-                    if let Some(limit) = early_limit {
-                        iter.take(limit).collect()
-                    } else {
-                        iter.collect()
-                    }
+            // Evaluate WHERE expression with CSE - this will populate the cache
+            // with all subexpressions including the common ones
+            let _ = ExpressionEvaluator::evaluate(where_expr, &ctx, &mut cse)?;
+
+            // Extract the common subexpressions from the cache
+            for hash in &common_expr_hashes {
+                if let Some(data) = cse.computed.get(hash) {
+                    pre_computed.insert(*hash, data.clone());
                 }
-                _ => anyhow::bail!("WHERE clause must evaluate to BOOL"),
-            };
+            }
+        }
 
-            let filtered: HashMap<String, ColumnData> = columns
-                .into_iter()
-                .map(|(name, data)| (name, Self::filter_column_data(data, &passing_indices)))
-                .collect();
-            (filtered, passing_indices.len())
-        } else if let Some(limit) = early_limit
-            && limit < row_count
-        {
-            let limited: HashMap<String, ColumnData> = columns
-                .into_iter()
-                .map(|(name, data)| (name, Self::take_first_n(data, limit)))
-                .collect();
-            (limited, limit)
-        } else {
-            (columns, row_count)
-        };
+        let (final_columns, final_row_count, passing_indices) =
+            if let Some(where_expr) = where_clause {
+                let ctx = EvaluationContext::with_default_table(
+                    base_column_map.clone(),
+                    row_count,
+                    table_name.to_string(),
+                );
+
+                // Create CSE context pre-populated with already computed expressions
+                let mut cse = CseContext::new();
+                for (hash, data) in &pre_computed {
+                    cse.computed.insert(*hash, data.clone());
+                }
+
+                // Evaluate WHERE clause to get filter mask
+                let filter_result = ExpressionEvaluator::evaluate(where_expr, &ctx, &mut cse)?;
+                let indices: Vec<usize> = match filter_result {
+                    ColumnData::Bool(mask) => {
+                        let iter = mask
+                            .into_iter()
+                            .enumerate()
+                            .filter_map(|(i, passes)| if passes { Some(i) } else { None });
+                        if let Some(limit) = early_limit {
+                            iter.take(limit).collect()
+                        } else {
+                            iter.collect()
+                        }
+                    }
+                    _ => anyhow::bail!("WHERE clause must evaluate to BOOL"),
+                };
+
+                let filtered: HashMap<String, ColumnData> = columns
+                    .into_iter()
+                    .map(|(name, data)| (name, Self::filter_column_data(data, &indices)))
+                    .collect();
+                let len = indices.len();
+                (filtered, len, Some(indices))
+            } else if let Some(limit) = early_limit
+                && limit < row_count
+            {
+                let limited: HashMap<String, ColumnData> = columns
+                    .into_iter()
+                    .map(|(name, data)| (name, Self::take_first_n(data, limit)))
+                    .collect();
+                (limited, limit, None)
+            } else {
+                (columns, row_count, None)
+            };
 
         // Build final context and evaluate column expressions
         let mut column_map = HashMap::new();
@@ -837,9 +896,30 @@ impl QueryExecutor {
             table_name.to_string(),
         );
 
+        let mut cse = CseContext::new();
+
+        // If we have pre-computed expressions and we filtered rows, we need to
+        // filter the pre-computed data as well
+        if let Some(ref indices) = passing_indices {
+            for (hash, data) in pre_computed {
+                let filtered_data = Self::filter_column_data(data, indices);
+                cse.computed.insert(hash, filtered_data);
+            }
+        } else if !pre_computed.is_empty() {
+            // No filtering happened, use pre-computed data as-is
+            if early_limit.is_some() && final_row_count < row_count {
+                for (hash, data) in pre_computed {
+                    let limited_data = Self::take_first_n(data, final_row_count);
+                    cse.computed.insert(hash, limited_data);
+                }
+            } else {
+                cse.computed = pre_computed;
+            }
+        }
+
         column_clauses
             .iter()
-            .map(|expr| ExpressionEvaluator::evaluate(expr, &ctx))
+            .map(|expr| ExpressionEvaluator::evaluate(expr, &ctx, &mut cse))
             .collect()
     }
 
