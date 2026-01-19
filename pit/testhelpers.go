@@ -9,9 +9,10 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/go-connections/nat"
 	openapi1 "github.com/smogork/ISBD-MIMUW/pit/client/openapi1"
 	openapi2 "github.com/smogork/ISBD-MIMUW/pit/client/openapi2"
-	"github.com/docker/go-connections/nat"
 	tc "github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
@@ -110,9 +111,16 @@ func StartTestContainer(ctx context.Context) (string, func(), error) {
 		Image:        image,
 		ExposedPorts: []string{portSpec},
 		WaitingFor:   wait.ForHTTP("/system/info").WithPort(nat.Port(portSpec)).WithStartupTimeout(30 * time.Second),
-    Mounts: tc.Mounts(
+		Mounts: tc.Mounts(
 			tc.BindMount(tablesDir, "/data/tables"),
 		),
+		HostConfigModifier: func(hc *container.HostConfig) {
+			hc.Memory = 128 * 1024 * 1024        // 128MB
+			hc.MemorySwap = 128 * 1024 * 1024    // 128MB
+		},
+		Env: map[string]string{
+			"GOMEMORYLIMIT": "128MiB",
+		},
 	}
 
 	cont, err := tc.GenericContainer(ctx, tc.GenericContainerRequest{ContainerRequest: req, Started: true})
