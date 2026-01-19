@@ -153,81 +153,47 @@ impl ExpressionEvaluator {
     ) -> Result<ColumnData> {
         match func.function_name {
             FunctionName::Strlen => {
-                if func.arguments.len() != 1 {
-                    anyhow::bail!("STRLEN expects exactly 1 argument");
-                }
-                let arg = Self::evaluate(&func.arguments[0], ctx, cse)?;
-                match arg {
-                    ColumnData::Varchar(vec) => Ok(ColumnData::Int64(
-                        vec.iter().map(|s| s.len() as i64).collect(),
-                    )),
-                    _ => anyhow::bail!("STRLEN expects a VARCHAR argument"),
-                }
+                let vec = Self::evaluate(&func.arguments[0], ctx, cse)?.into_varchar();
+                Ok(ColumnData::Int64(
+                    vec.iter().map(|s| s.len() as i64).collect(),
+                ))
             }
             FunctionName::Concat => {
-                if func.arguments.len() != 2 {
-                    anyhow::bail!("CONCAT expects exactly 2 arguments");
-                }
-                let left = Self::evaluate(&func.arguments[0], ctx, cse)?;
-                let right = Self::evaluate(&func.arguments[1], ctx, cse)?;
-                match (left, right) {
-                    (ColumnData::Varchar(v1), ColumnData::Varchar(v2)) => Ok(ColumnData::Varchar(
-                        v1.iter()
-                            .zip(v2.iter())
-                            .map(|(s1, s2)| format!("{}{}", s1, s2))
-                            .collect(),
-                    )),
-                    _ => anyhow::bail!("CONCAT expects VARCHAR arguments"),
-                }
+                let v1 = Self::evaluate(&func.arguments[0], ctx, cse)?.into_varchar();
+                let v2 = Self::evaluate(&func.arguments[1], ctx, cse)?.into_varchar();
+                Ok(ColumnData::Varchar(
+                    v1.iter()
+                        .zip(v2.iter())
+                        .map(|(s1, s2)| format!("{}{}", s1, s2))
+                        .collect(),
+                ))
             }
             FunctionName::Replace => {
-                if func.arguments.len() != 3 {
-                    anyhow::bail!("REPLACE expects exactly 3 arguments");
-                }
-                let source = Self::evaluate(&func.arguments[0], ctx, cse)?;
-                let old = Self::evaluate(&func.arguments[1], ctx, cse)?;
-                let new = Self::evaluate(&func.arguments[2], ctx, cse)?;
-                match (source, old, new) {
-                    (
-                        ColumnData::Varchar(v_source),
-                        ColumnData::Varchar(v_old),
-                        ColumnData::Varchar(v_new),
-                    ) => Ok(ColumnData::Varchar(
-                        v_source
-                            .iter()
-                            .zip(v_old.iter())
-                            .zip(v_new.iter())
-                            .map(|((source_str, old_str), new_str)| {
-                                source_str.replace(old_str, new_str)
-                            })
-                            .collect(),
-                    )),
-                    _ => anyhow::bail!("REPLACE expects VARCHAR arguments"),
-                }
+                let v_source = Self::evaluate(&func.arguments[0], ctx, cse)?.into_varchar();
+                let v_old = Self::evaluate(&func.arguments[1], ctx, cse)?.into_varchar();
+                let v_new = Self::evaluate(&func.arguments[2], ctx, cse)?.into_varchar();
+                Ok(ColumnData::Varchar(
+                    v_source
+                        .iter()
+                        .zip(v_old.iter())
+                        .zip(v_new.iter())
+                        .map(|((source_str, old_str), new_str)| {
+                            source_str.replace(old_str, new_str)
+                        })
+                        .collect(),
+                ))
             }
             FunctionName::Upper => {
-                if func.arguments.len() != 1 {
-                    anyhow::bail!("UPPER expects exactly 1 argument");
-                }
-                let arg = Self::evaluate(&func.arguments[0], ctx, cse)?;
-                match arg {
-                    ColumnData::Varchar(vec) => Ok(ColumnData::Varchar(
-                        vec.iter().map(|s| s.to_ascii_uppercase()).collect(),
-                    )),
-                    _ => anyhow::bail!("UPPER expects a VARCHAR argument"),
-                }
+                let vec = Self::evaluate(&func.arguments[0], ctx, cse)?.into_varchar();
+                Ok(ColumnData::Varchar(
+                    vec.iter().map(|s| s.to_ascii_uppercase()).collect(),
+                ))
             }
             FunctionName::Lower => {
-                if func.arguments.len() != 1 {
-                    anyhow::bail!("LOWER expects exactly 1 argument");
-                }
-                let arg = Self::evaluate(&func.arguments[0], ctx, cse)?;
-                match arg {
-                    ColumnData::Varchar(vec) => Ok(ColumnData::Varchar(
-                        vec.iter().map(|s| s.to_ascii_lowercase()).collect(),
-                    )),
-                    _ => anyhow::bail!("LOWER expects a VARCHAR argument"),
-                }
+                let vec = Self::evaluate(&func.arguments[0], ctx, cse)?.into_varchar();
+                Ok(ColumnData::Varchar(
+                    vec.iter().map(|s| s.to_ascii_lowercase()).collect(),
+                ))
             }
         }
     }
@@ -242,13 +208,9 @@ impl ExpressionEvaluator {
         let right = Self::evaluate(&op.right_operand, ctx, cse)?;
 
         match op.operator {
-            BinaryOperator::Add => Self::binary_arithmetic(left, right, |a, b| a + b, "ADD"),
-            BinaryOperator::Subtract => {
-                Self::binary_arithmetic(left, right, |a, b| a - b, "SUBTRACT")
-            }
-            BinaryOperator::Multiply => {
-                Self::binary_arithmetic(left, right, |a, b| a * b, "MULTIPLY")
-            }
+            BinaryOperator::Add => Ok(Self::binary_arithmetic(left, right, |a, b| a + b)),
+            BinaryOperator::Subtract => Ok(Self::binary_arithmetic(left, right, |a, b| a - b)),
+            BinaryOperator::Multiply => Ok(Self::binary_arithmetic(left, right, |a, b| a * b)),
             BinaryOperator::Divide => {
                 // Check for division by zero
                 if let ColumnData::Int64(ref r) = right
@@ -256,10 +218,10 @@ impl ExpressionEvaluator {
                 {
                     anyhow::bail!("Division by zero");
                 }
-                Self::binary_arithmetic(left, right, |a, b| a / b, "DIVIDE")
+                Ok(Self::binary_arithmetic(left, right, |a, b| a / b))
             }
-            BinaryOperator::And => Self::binary_logical(left, right, |a, b| a && b, "AND"),
-            BinaryOperator::Or => Self::binary_logical(left, right, |a, b| a || b, "OR"),
+            BinaryOperator::And => Ok(Self::binary_logical(left, right, |a, b| a && b)),
+            BinaryOperator::Or => Ok(Self::binary_logical(left, right, |a, b| a || b)),
             BinaryOperator::Equal => Self::compare_equal(left, right, true),
             BinaryOperator::NotEqual => Self::compare_equal(left, right, false),
             BinaryOperator::LessThan => Self::compare_order(left, right, |ord| ord.is_lt()),
@@ -270,39 +232,23 @@ impl ExpressionEvaluator {
     }
 
     /// Helper for arithmetic operations on columns
-    fn binary_arithmetic<F>(
-        left: ColumnData,
-        right: ColumnData,
-        f: F,
-        op_name: &str,
-    ) -> Result<ColumnData>
+    fn binary_arithmetic<F>(left: ColumnData, right: ColumnData, f: F) -> ColumnData
     where
         F: Fn(i64, i64) -> i64,
     {
-        match (left, right) {
-            (ColumnData::Int64(l), ColumnData::Int64(r)) => Ok(ColumnData::Int64(
-                l.iter().zip(r.iter()).map(|(&a, &b)| f(a, b)).collect(),
-            )),
-            _ => anyhow::bail!("{} expects INT64 operands", op_name),
-        }
+        let l = left.into_int64();
+        let r = right.into_int64();
+        ColumnData::Int64(l.iter().zip(r.iter()).map(|(&a, &b)| f(a, b)).collect())
     }
 
     /// Helper for logical operations on columns
-    fn binary_logical<F>(
-        left: ColumnData,
-        right: ColumnData,
-        f: F,
-        op_name: &str,
-    ) -> Result<ColumnData>
+    fn binary_logical<F>(left: ColumnData, right: ColumnData, f: F) -> ColumnData
     where
         F: Fn(bool, bool) -> bool,
     {
-        match (left, right) {
-            (ColumnData::Bool(l), ColumnData::Bool(r)) => Ok(ColumnData::Bool(
-                l.iter().zip(r.iter()).map(|(&a, &b)| f(a, b)).collect(),
-            )),
-            _ => anyhow::bail!("{} expects BOOL operands", op_name),
-        }
+        let l = left.into_bool();
+        let r = right.into_bool();
+        ColumnData::Bool(l.iter().zip(r.iter()).map(|(&a, &b)| f(a, b)).collect())
     }
 
     /// Helper for equality comparison on columns
@@ -366,14 +312,14 @@ impl ExpressionEvaluator {
         let operand = Self::evaluate(&op.operand, ctx, cse)?;
 
         match op.operator {
-            UnaryOperator::Not => match operand {
-                ColumnData::Bool(vec) => Ok(ColumnData::Bool(vec.iter().map(|&b| !b).collect())),
-                _ => anyhow::bail!("NOT expects a BOOL operand"),
-            },
-            UnaryOperator::Minus => match operand {
-                ColumnData::Int64(vec) => Ok(ColumnData::Int64(vec.iter().map(|&v| -v).collect())),
-                _ => anyhow::bail!("MINUS expects an INT64 operand"),
-            },
+            UnaryOperator::Not => {
+                let vec = operand.into_bool();
+                Ok(ColumnData::Bool(vec.iter().map(|&b| !b).collect()))
+            }
+            UnaryOperator::Minus => {
+                let vec = operand.into_int64();
+                Ok(ColumnData::Int64(vec.iter().map(|&v| -v).collect()))
+            }
         }
     }
 
@@ -406,31 +352,195 @@ impl ExpressionEvaluator {
                     anyhow::anyhow!("Column '{}.{}' not found", table_name, col_ref.column_name)
                 })
             }
-            ColumnExpression::Function(func) => match func.function_name {
-                FunctionName::Strlen => Ok(ColumnType::Int64),
-                FunctionName::Concat
-                | FunctionName::Replace
-                | FunctionName::Upper
-                | FunctionName::Lower => Ok(ColumnType::Varchar),
-            },
-            ColumnExpression::BinaryOperation(bin_op) => match bin_op.operator {
-                BinaryOperator::Add
-                | BinaryOperator::Subtract
-                | BinaryOperator::Multiply
-                | BinaryOperator::Divide => Ok(ColumnType::Int64),
-                BinaryOperator::And
-                | BinaryOperator::Or
-                | BinaryOperator::Equal
-                | BinaryOperator::NotEqual
-                | BinaryOperator::LessThan
-                | BinaryOperator::LessEqual
-                | BinaryOperator::GreaterThan
-                | BinaryOperator::GreaterEqual => Ok(ColumnType::Bool),
-            },
-            ColumnExpression::UnaryOperation(unary_op) => match unary_op.operator {
-                UnaryOperator::Not => Ok(ColumnType::Bool),
-                UnaryOperator::Minus => Ok(ColumnType::Int64),
-            },
+            ColumnExpression::Function(func) => {
+                Self::validate_and_infer_function_type(func, column_types, default_table)
+            }
+            ColumnExpression::BinaryOperation(bin_op) => {
+                Self::validate_and_infer_binary_op_type(bin_op, column_types, default_table)
+            }
+            ColumnExpression::UnaryOperation(unary_op) => {
+                Self::validate_and_infer_unary_op_type(unary_op, column_types, default_table)
+            }
+        }
+    }
+
+    /// Validate function argument types and return the result type
+    fn validate_and_infer_function_type(
+        func: &Function,
+        column_types: &HashMap<(String, String), ColumnType>,
+        default_table: Option<&str>,
+    ) -> Result<ColumnType> {
+        match func.function_name {
+            FunctionName::Strlen => {
+                if func.arguments.len() != 1 {
+                    anyhow::bail!("STRLEN expects exactly 1 argument");
+                }
+                let arg_type = Self::infer_type(&func.arguments[0], column_types, default_table)?;
+                if arg_type != ColumnType::Varchar {
+                    anyhow::bail!("STRLEN expects a VARCHAR argument, got {:?}", arg_type);
+                }
+                Ok(ColumnType::Int64)
+            }
+            FunctionName::Concat => {
+                if func.arguments.len() != 2 {
+                    anyhow::bail!("CONCAT expects exactly 2 arguments");
+                }
+                let arg1_type = Self::infer_type(&func.arguments[0], column_types, default_table)?;
+                let arg2_type = Self::infer_type(&func.arguments[1], column_types, default_table)?;
+                if arg1_type != ColumnType::Varchar {
+                    anyhow::bail!(
+                        "CONCAT expects VARCHAR arguments, first argument is {:?}",
+                        arg1_type
+                    );
+                }
+                if arg2_type != ColumnType::Varchar {
+                    anyhow::bail!(
+                        "CONCAT expects VARCHAR arguments, second argument is {:?}",
+                        arg2_type
+                    );
+                }
+                Ok(ColumnType::Varchar)
+            }
+            FunctionName::Replace => {
+                if func.arguments.len() != 3 {
+                    anyhow::bail!("REPLACE expects exactly 3 arguments");
+                }
+                let arg1_type = Self::infer_type(&func.arguments[0], column_types, default_table)?;
+                let arg2_type = Self::infer_type(&func.arguments[1], column_types, default_table)?;
+                let arg3_type = Self::infer_type(&func.arguments[2], column_types, default_table)?;
+                if arg1_type != ColumnType::Varchar {
+                    anyhow::bail!(
+                        "REPLACE expects VARCHAR arguments, first argument is {:?}",
+                        arg1_type
+                    );
+                }
+                if arg2_type != ColumnType::Varchar {
+                    anyhow::bail!(
+                        "REPLACE expects VARCHAR arguments, second argument is {:?}",
+                        arg2_type
+                    );
+                }
+                if arg3_type != ColumnType::Varchar {
+                    anyhow::bail!(
+                        "REPLACE expects VARCHAR arguments, third argument is {:?}",
+                        arg3_type
+                    );
+                }
+                Ok(ColumnType::Varchar)
+            }
+            FunctionName::Upper => {
+                if func.arguments.len() != 1 {
+                    anyhow::bail!("UPPER expects exactly 1 argument");
+                }
+                let arg_type = Self::infer_type(&func.arguments[0], column_types, default_table)?;
+                if arg_type != ColumnType::Varchar {
+                    anyhow::bail!("UPPER expects a VARCHAR argument, got {:?}", arg_type);
+                }
+                Ok(ColumnType::Varchar)
+            }
+            FunctionName::Lower => {
+                if func.arguments.len() != 1 {
+                    anyhow::bail!("LOWER expects exactly 1 argument");
+                }
+                let arg_type = Self::infer_type(&func.arguments[0], column_types, default_table)?;
+                if arg_type != ColumnType::Varchar {
+                    anyhow::bail!("LOWER expects a VARCHAR argument, got {:?}", arg_type);
+                }
+                Ok(ColumnType::Varchar)
+            }
+        }
+    }
+
+    /// Validate binary operation operand types and return the result type
+    fn validate_and_infer_binary_op_type(
+        bin_op: &ColumnarBinaryOperation,
+        column_types: &HashMap<(String, String), ColumnType>,
+        default_table: Option<&str>,
+    ) -> Result<ColumnType> {
+        let left_type = Self::infer_type(&bin_op.left_operand, column_types, default_table)?;
+        let right_type = Self::infer_type(&bin_op.right_operand, column_types, default_table)?;
+
+        match bin_op.operator {
+            BinaryOperator::Add
+            | BinaryOperator::Subtract
+            | BinaryOperator::Multiply
+            | BinaryOperator::Divide => {
+                if left_type != ColumnType::Int64 {
+                    anyhow::bail!(
+                        "{:?} expects INT64 operands, left operand is {:?}",
+                        bin_op.operator,
+                        left_type
+                    );
+                }
+                if right_type != ColumnType::Int64 {
+                    anyhow::bail!(
+                        "{:?} expects INT64 operands, right operand is {:?}",
+                        bin_op.operator,
+                        right_type
+                    );
+                }
+                Ok(ColumnType::Int64)
+            }
+            BinaryOperator::And | BinaryOperator::Or => {
+                if left_type != ColumnType::Bool {
+                    anyhow::bail!(
+                        "{:?} expects BOOL operands, left operand is {:?}",
+                        bin_op.operator,
+                        left_type
+                    );
+                }
+                if right_type != ColumnType::Bool {
+                    anyhow::bail!(
+                        "{:?} expects BOOL operands, right operand is {:?}",
+                        bin_op.operator,
+                        right_type
+                    );
+                }
+                Ok(ColumnType::Bool)
+            }
+            BinaryOperator::Equal
+            | BinaryOperator::NotEqual
+            | BinaryOperator::LessThan
+            | BinaryOperator::LessEqual
+            | BinaryOperator::GreaterThan
+            | BinaryOperator::GreaterEqual => {
+                if left_type != right_type {
+                    anyhow::bail!(
+                        "{:?} requires operands of the same type, got {:?} and {:?}",
+                        bin_op.operator,
+                        left_type,
+                        right_type
+                    );
+                }
+                Ok(ColumnType::Bool)
+            }
+        }
+    }
+
+    /// Validate unary operation operand type and return the result type
+    fn validate_and_infer_unary_op_type(
+        unary_op: &ColumnarUnaryOperation,
+        column_types: &HashMap<(String, String), ColumnType>,
+        default_table: Option<&str>,
+    ) -> Result<ColumnType> {
+        let operand_type = Self::infer_type(&unary_op.operand, column_types, default_table)?;
+
+        match unary_op.operator {
+            UnaryOperator::Not => {
+                if operand_type != ColumnType::Bool {
+                    anyhow::bail!("NOT expects a BOOL operand, got {:?}", operand_type);
+                }
+                Ok(ColumnType::Bool)
+            }
+            UnaryOperator::Minus => {
+                if operand_type != ColumnType::Int64 {
+                    anyhow::bail!(
+                        "Unary minus expects an INT64 operand, got {:?}",
+                        operand_type
+                    );
+                }
+                Ok(ColumnType::Int64)
+            }
         }
     }
 }

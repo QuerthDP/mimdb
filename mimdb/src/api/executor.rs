@@ -20,11 +20,6 @@ use crate::api::expression::collect_column_references;
 use crate::api::expression::collect_subexpressions;
 use crate::api::expression::collect_table_references;
 use crate::api::models::ColumnExpression;
-use crate::api::models::ColumnExpression::BinaryOperation;
-use crate::api::models::ColumnExpression::ColumnReference;
-use crate::api::models::ColumnExpression::Function;
-use crate::api::models::ColumnExpression::Literal;
-use crate::api::models::ColumnExpression::UnaryOperation;
 use crate::api::models::CopyQuery;
 use crate::api::models::LimitExpression;
 use crate::api::models::OrderByExpression;
@@ -469,18 +464,15 @@ impl QueryExecutor {
 
         // Validate column expressions
         for (i, expr) in query.column_clauses.iter().enumerate() {
-            Self::validate_expression(expr, &column_types, Some(&table_name))
+            ExpressionEvaluator::infer_type(expr, &column_types, Some(&table_name))
                 .context(format!("Invalid column expression at index {}", i))?;
         }
 
         // Validate WHERE clause expression
         if let Some(ref where_clause) = query.where_clause {
-            Self::validate_expression(where_clause, &column_types, Some(&table_name))
-                .context("Invalid WHERE clause expression")?;
-
-            // WHERE clause must evaluate to boolean
             let where_type =
-                ExpressionEvaluator::infer_type(where_clause, &column_types, Some(&table_name))?;
+                ExpressionEvaluator::infer_type(where_clause, &column_types, Some(&table_name))
+                    .context("Invalid WHERE clause expression")?;
             if where_type != ColumnType::Bool {
                 anyhow::bail!("WHERE clause must evaluate to BOOL, got {:?}", where_type);
             }
@@ -524,50 +516,6 @@ impl QueryExecutor {
             );
         }
         column_types
-    }
-
-    /// Validate an expression - check that all column references exist
-    fn validate_expression(
-        expr: &ColumnExpression,
-        column_types: &HashMap<(String, String), ColumnType>,
-        default_table: Option<&str>,
-    ) -> Result<()> {
-        match expr {
-            ColumnReference(col_ref) => {
-                let table_name =
-                    col_ref
-                        .table_name
-                        .as_deref()
-                        .or(default_table)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "Column '{}' has no table name and no default table is available",
-                                col_ref.column_name
-                            )
-                        })?;
-                let key = (table_name.to_string(), col_ref.column_name.clone());
-                if !column_types.contains_key(&key) {
-                    anyhow::bail!("Column '{}.{}' not found", table_name, col_ref.column_name);
-                }
-                Ok(())
-            }
-            Literal(_) => Ok(()),
-            Function(func) => {
-                for arg in &func.arguments {
-                    Self::validate_expression(arg, column_types, default_table)?;
-                }
-                Ok(())
-            }
-            BinaryOperation(bin_op) => {
-                Self::validate_expression(&bin_op.left_operand, column_types, default_table)?;
-                Self::validate_expression(&bin_op.right_operand, column_types, default_table)?;
-                Ok(())
-            }
-            UnaryOperation(unary_op) => {
-                Self::validate_expression(&unary_op.operand, column_types, default_table)?;
-                Ok(())
-            }
-        }
     }
 
     /// Execute a query plan and return the result

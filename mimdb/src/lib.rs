@@ -68,6 +68,30 @@ impl ColumnData {
             ColumnData::Bool(_) => ColumnType::Bool,
         }
     }
+
+    /// Extract Int64 data. Panics if not Int64.
+    pub fn into_int64(self) -> Vec<i64> {
+        match self {
+            ColumnData::Int64(v) => v,
+            _ => panic!("expected Int64"),
+        }
+    }
+
+    /// Extract Varchar data. Panics if not Varchar.
+    pub fn into_varchar(self) -> Vec<String> {
+        match self {
+            ColumnData::Varchar(v) => v,
+            _ => panic!("expected Varchar"),
+        }
+    }
+
+    /// Extract Bool data. Panics if not Bool.
+    pub fn into_bool(self) -> Vec<bool> {
+        match self {
+            ColumnData::Bool(v) => v,
+            _ => panic!("expected Bool"),
+        }
+    }
 }
 
 /// Main table structure for columnar data
