@@ -1,3 +1,6 @@
+//go:build v1tests
+// +build v1tests
+
 package tests
 
 import (
