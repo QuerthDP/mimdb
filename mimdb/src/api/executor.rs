@@ -9,6 +9,16 @@
 //!
 //! This module handles query execution, including COPY and SELECT queries.
 //! It manages query lifecycle and stores results.
+//!
+//! It supports parallel execution of SELECT queries using a pipeline model:
+//!
+//! Reader → Transformation → Filter → Transformation → Sort → Limit → Output
+//!
+//! For parallel execution, the pipeline is split into:
+//! 1. Parallel phase: Multiple workers process different data files independently
+//!    (Reader → Input Projection → Filter → Output Projection)
+//! 2. Sequential phase: Results are merged, sorted, and limited
+//!    (Merge → Sort → Limit → Output)
 
 use crate::ColumnData;
 use crate::ColumnType;
@@ -35,6 +45,7 @@ use crate::metastore::TableMetadata;
 use anyhow::Context;
 use anyhow::Result;
 use parking_lot::RwLock;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
@@ -75,6 +86,73 @@ pub struct SelectPlan {
 pub enum QueryPlan {
     Copy(CopyPlan),
     Select(SelectPlan),
+}
+
+/// Configuration for Common Subexpression Elimination (CSE)
+/// Pre-computed before parallel processing to share across workers
+#[derive(Debug, Clone)]
+struct CseConfig {
+    /// Hashes of expressions shared between WHERE and SELECT clauses
+    common_expr_hashes: HashSet<u64>,
+}
+
+impl CseConfig {
+    /// Analyze expressions to find common subexpressions between WHERE and SELECT
+    fn analyze(
+        where_clause: Option<&ColumnExpression>,
+        column_clauses: &[ColumnExpression],
+    ) -> Self {
+        let common_expr_hashes = if let Some(where_expr) = where_clause {
+            let where_subexprs = collect_subexpressions(where_expr);
+            let where_hashes: HashSet<u64> = where_subexprs.keys().cloned().collect();
+
+            let mut select_hashes: HashSet<u64> = HashSet::new();
+            for expr in column_clauses {
+                let subexprs = collect_subexpressions(expr);
+                select_hashes.extend(subexprs.keys().cloned());
+            }
+
+            where_hashes.intersection(&select_hashes).cloned().collect()
+        } else {
+            HashSet::new()
+        };
+
+        Self { common_expr_hashes }
+    }
+
+    fn has_common_expressions(&self) -> bool {
+        !self.common_expr_hashes.is_empty()
+    }
+}
+
+/// Result from a single pipeline worker after processing a data file partition
+type WorkerResult = Option<Vec<ColumnData>>;
+
+/// Result of the filter stage
+type FilterResult = (HashMap<String, ColumnData>, usize, Option<Vec<usize>>);
+
+/// Pipeline context shared across all workers (read-only during execution)
+#[derive(Clone)]
+struct PipelineContext {
+    table_name: String,
+    where_clause: Option<ColumnExpression>,
+    column_clauses: Vec<ColumnExpression>,
+    cse_config: CseConfig,
+    early_limit: Option<usize>,
+}
+
+impl PipelineContext {
+    fn new(plan: &SelectPlan, early_limit: Option<usize>) -> Self {
+        let cse_config = CseConfig::analyze(plan.where_clause.as_ref(), &plan.column_clauses);
+
+        Self {
+            table_name: plan.table_meta.name.clone(),
+            where_clause: plan.where_clause.clone(),
+            column_clauses: plan.column_clauses.clone(),
+            cse_config,
+            early_limit,
+        }
+    }
 }
 
 /// Internal query state
@@ -632,84 +710,68 @@ impl QueryExecutor {
         Ok(())
     }
 
-    /// Execute a SELECT query plan
+    /// Execute a SELECT query plan with parallel processing
+    ///
+    /// The pipeline is structured as follows:
+    /// 1. Parallel phase: Each data file is processed by a worker
+    ///    (Reader → Input Projection → Filter → Output Projection)
+    /// 2. Sequential phase: Results are merged, sorted, and limited
+    ///    (Merge → Sort → Limit → Output)
     fn execute_select_plan(plan: &SelectPlan) -> Result<QueryResult> {
-        let mut columns: HashMap<String, ColumnData> = HashMap::new();
-        for col in &plan.required_columns {
-            let initial_data = match col.column_type {
-                ColumnType::Int64 => ColumnData::Int64(Vec::new()),
-                ColumnType::Varchar => ColumnData::Varchar(Vec::new()),
-                ColumnType::Bool => ColumnData::Bool(Vec::new()),
-            };
-            columns.insert(col.name.clone(), initial_data);
+        if plan.data_files.is_empty() {
+            return Ok(vec![]);
         }
 
-        let mut total_rows = 0usize;
-        for file_path in &plan.data_files {
-            let table = Table::deserialize(file_path)
-                .context(format!("Failed to read data file: {:?}", file_path))?;
-
-            for (name, data) in table.columns {
-                if let Some(col_storage) = columns.get_mut(&name) {
-                    match (col_storage, data) {
-                        (ColumnData::Int64(dest), ColumnData::Int64(src)) => {
-                            dest.extend(src);
-                        }
-                        (ColumnData::Varchar(dest), ColumnData::Varchar(src)) => {
-                            dest.extend(src);
-                        }
-                        (ColumnData::Bool(dest), ColumnData::Bool(src)) => {
-                            dest.extend(src);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            total_rows += table.row_count;
-        }
-
-        // If no ORDER BY clause, we may evaluate only up to LIMIT rows early
+        // Determine if we can apply early limit (only when no sorting)
         let early_limit = if plan.order_by_clause.is_none() {
             plan.limit_clause.as_ref().map(|l| l.limit as usize)
         } else {
             None
         };
 
-        // Apply WHERE clause and evaluate column expressions
-        let result_columns = Self::filter_and_evaluate(
-            &plan.table_meta.name,
-            columns,
-            total_rows,
-            plan.where_clause.as_ref(),
-            &plan.column_clauses,
-            early_limit,
-        )?;
+        // Create pipeline context (shared across all workers)
+        let pipeline_ctx = PipelineContext::new(plan, early_limit);
+        let required_columns = plan.required_columns.clone();
+        let num_output_columns = plan.column_clauses.len();
 
-        let filtered_row_count = result_columns.first().map(|c| c.len()).unwrap_or(0);
+        // Process each data file through the pipeline
+        let worker_results = plan
+            .data_files
+            .par_iter()
+            .map(|file_path| Self::process_data_file(file_path, &required_columns, &pipeline_ctx))
+            .collect::<Result<Vec<_>>>()?;
 
-        // Apply ORDER BY if specified
-        let ordered_indices: Vec<usize> = if let Some(ref order_by) = plan.order_by_clause {
-            Self::compute_sort_order(&result_columns, order_by, filtered_row_count)?
+        // Combine results from all workers
+        let merged_columns = Self::merge_worker_results(worker_results, num_output_columns);
+        let total_row_count = merged_columns.first().map(|c| c.len()).unwrap_or(0);
+
+        if total_row_count == 0 {
+            return Ok(vec![]);
+        }
+
+        // Order results if needed
+        let ordered_indices = if let Some(ref order_by) = plan.order_by_clause {
+            Self::compute_sort_order(&merged_columns, order_by, total_row_count)?
         } else {
-            (0..filtered_row_count).collect()
+            (0..total_row_count).collect()
         };
 
-        // Apply LIMIT if specified
+        // Apply row limit
         let final_indices: Vec<usize> = if let Some(ref limit) = plan.limit_clause {
-            let limit_count = limit.limit as usize;
-            ordered_indices.into_iter().take(limit_count).collect()
+            ordered_indices
+                .into_iter()
+                .take(limit.limit as usize)
+                .collect()
         } else {
             ordered_indices
         };
 
-        // Return empty result if no rows
         if final_indices.is_empty() {
             return Ok(vec![]);
         }
 
-        // Reorder result columns based on final indices
-        let final_columns: Vec<ResultColumn> = result_columns
+        // Build final result
+        let final_columns: Vec<ResultColumn> = merged_columns
             .into_iter()
             .map(|col| Self::reorder_column_data(col, &final_indices))
             .collect();
@@ -720,92 +782,192 @@ impl QueryExecutor {
         }])
     }
 
-    /// Filter rows based on WHERE clause and evaluate column expressions
-    /// Uses Common Subexpression Elimination (CSE) to avoid redundant computation
-    /// of expressions that appear in both WHERE and SELECT clauses.
+    /// Process a single data file through the pipeline stages
     ///
-    /// The CSE optimization works as follows:
-    /// 1. Find expressions that are common between WHERE and SELECT
-    /// 2. Pre-compute these common expressions before filtering (input projection)
-    /// 3. Use the pre-computed values during filtering
-    /// 4. After filtering, reuse the pre-computed values for SELECT evaluation
-    fn filter_and_evaluate(
-        table_name: &str,
+    /// Pipeline stages:
+    /// 1. Reader: Load data from file
+    /// 2. Input Projection: Compute CSE expressions needed for WHERE
+    /// 3. Filter: Apply WHERE clause
+    /// 4. Output Projection: Evaluate SELECT expressions
+    fn process_data_file(
+        file_path: &PathBuf,
+        required_columns: &[ColumnMetadata],
+        ctx: &PipelineContext,
+    ) -> Result<WorkerResult> {
+        let (columns, row_count) = Self::read_data_file(file_path, required_columns)?;
+
+        if row_count == 0 {
+            return Ok(None);
+        }
+
+        Self::apply_pipeline_stages(columns, row_count, ctx)
+    }
+
+    /// Load required columns from a data file
+    fn read_data_file(
+        file_path: &PathBuf,
+        required_columns: &[ColumnMetadata],
+    ) -> Result<(HashMap<String, ColumnData>, usize)> {
+        let table = Table::deserialize(file_path)
+            .context(format!("Failed to read data file: {:?}", file_path))?;
+
+        let row_count = table.row_count;
+        let mut columns = HashMap::new();
+
+        for col_meta in required_columns {
+            if let Some(data) = table.columns.get(&col_meta.name) {
+                columns.insert(col_meta.name.clone(), data.clone());
+            } else {
+                // Column not in this file
+                let default_data = match col_meta.column_type {
+                    ColumnType::Int64 => ColumnData::Int64(vec![0; row_count]),
+                    ColumnType::Varchar => ColumnData::Varchar(vec![String::new(); row_count]),
+                    ColumnType::Bool => ColumnData::Bool(vec![false; row_count]),
+                };
+                columns.insert(col_meta.name.clone(), default_data);
+            }
+        }
+
+        Ok((columns, row_count))
+    }
+
+    /// This combines the transformation stages with proper CSE handling:
+    /// - Input Projection: Pre-compute expressions common to WHERE and SELECT
+    /// - Filter: Apply WHERE clause to get passing rows
+    /// - Output Projection: Evaluate SELECT expressions
+    fn apply_pipeline_stages(
         columns: HashMap<String, ColumnData>,
         row_count: usize,
-        where_clause: Option<&ColumnExpression>,
-        column_clauses: &[ColumnExpression],
-        early_limit: Option<usize>,
-    ) -> Result<Vec<ColumnData>> {
-        // Build base context for expression evaluation
-        let mut base_column_map = HashMap::new();
-        for (col_name, data) in &columns {
-            base_column_map.insert((table_name.to_string(), col_name.clone()), data);
-        }
+        ctx: &PipelineContext,
+    ) -> Result<WorkerResult> {
+        let table_name = &ctx.table_name;
 
-        let common_expr_hashes: HashSet<u64> = if let Some(where_expr) = where_clause {
-            // Collect subexpressions from WHERE
-            let where_subexprs = collect_subexpressions(where_expr);
-            let where_hashes: HashSet<u64> = where_subexprs.keys().cloned().collect();
-
-            // Collect subexpressions from all SELECT clauses
-            let mut select_hashes: HashSet<u64> = HashSet::new();
-            for expr in column_clauses {
-                let subexprs = collect_subexpressions(expr);
-                select_hashes.extend(subexprs.keys().cloned());
-            }
-
-            where_hashes.intersection(&select_hashes).cloned().collect()
+        // Pre-compute CSE expressions and WHERE result if applicable
+        let (pre_computed, where_result_cached) = if ctx.cse_config.has_common_expressions()
+            && let Some(ref where_expr) = ctx.where_clause
+        {
+            let column_map = Self::build_column_map(&columns, table_name);
+            let (cse_cache, where_result) = Self::compute_input_projection(
+                &column_map,
+                row_count,
+                table_name,
+                where_expr,
+                &ctx.cse_config.common_expr_hashes,
+            )?;
+            (cse_cache, Some(where_result))
         } else {
-            HashSet::new()
+            (HashMap::new(), None)
         };
 
-        let mut pre_computed: HashMap<u64, ColumnData> = HashMap::new();
+        // Apply WHERE clause
+        let (filtered_columns, filtered_count, passing_indices) = Self::apply_filter(
+            columns,
+            row_count,
+            table_name,
+            ctx.where_clause.as_ref(),
+            &pre_computed,
+            where_result_cached,
+            ctx.early_limit,
+        )?;
 
-        if !common_expr_hashes.is_empty()
-            && let Some(where_expr) = where_clause
-        {
-            let ctx = EvaluationContext::with_default_table(
-                base_column_map.clone(),
-                row_count,
-                table_name.to_string(),
-            );
-            let mut cse = CseContext::new();
+        if filtered_count == 0 {
+            return Ok(None);
+        }
 
-            // Evaluate WHERE expression with CSE - this will populate the cache
-            // with all subexpressions including the common ones
-            let _ = ExpressionEvaluator::evaluate(where_expr, &ctx, &mut cse)?;
+        // Evaluate SELECT expressions
+        let output_columns = Self::compute_output_projection(
+            &filtered_columns,
+            filtered_count,
+            table_name,
+            &ctx.column_clauses,
+            pre_computed,
+            passing_indices.as_deref(),
+        )?;
 
-            // Extract the common subexpressions from the cache
-            for hash in &common_expr_hashes {
-                if let Some(data) = cse.computed.get(hash) {
-                    pre_computed.insert(*hash, data.clone());
-                }
+        Ok(Some(output_columns))
+    }
+
+    /// Build a column map for expression evaluation
+    fn build_column_map<'a>(
+        columns: &'a HashMap<String, ColumnData>,
+        table_name: &str,
+    ) -> HashMap<(String, String), &'a ColumnData> {
+        columns
+            .iter()
+            .map(|(col_name, data)| ((table_name.to_string(), col_name.clone()), data))
+            .collect()
+    }
+
+    /// Pre-compute expressions shared between WHERE and SELECT
+    fn compute_input_projection(
+        column_map: &HashMap<(String, String), &ColumnData>,
+        row_count: usize,
+        table_name: &str,
+        where_expr: &ColumnExpression,
+        common_hashes: &HashSet<u64>,
+    ) -> Result<(HashMap<u64, ColumnData>, ColumnData)> {
+        let eval_ctx = EvaluationContext::with_default_table(
+            column_map.clone(),
+            row_count,
+            table_name.to_string(),
+        );
+        let mut cse = CseContext::new();
+
+        // Evaluate WHERE expression - this populates the CSE cache
+        let where_result = ExpressionEvaluator::evaluate(where_expr, &eval_ctx, &mut cse)?;
+
+        // Extract only the common subexpressions
+        let mut pre_computed = HashMap::new();
+        for hash in common_hashes {
+            if let Some(data) = cse.computed.get(hash) {
+                pre_computed.insert(*hash, data.clone());
             }
         }
 
-        let (final_columns, final_row_count, passing_indices) =
-            if let Some(where_expr) = where_clause {
-                let ctx = EvaluationContext::with_default_table(
-                    base_column_map.clone(),
-                    row_count,
-                    table_name.to_string(),
-                );
+        Ok((pre_computed, where_result))
+    }
 
-                // Create CSE context pre-populated with already computed expressions
-                let mut cse = CseContext::new();
-                for (hash, data) in &pre_computed {
-                    cse.computed.insert(*hash, data.clone());
-                }
+    /// Apply WHERE clause and return filtered columns
+    fn apply_filter(
+        columns: HashMap<String, ColumnData>,
+        row_count: usize,
+        table_name: &str,
+        where_clause: Option<&ColumnExpression>,
+        pre_computed: &HashMap<u64, ColumnData>,
+        where_result_cached: Option<ColumnData>,
+        early_limit: Option<usize>,
+    ) -> Result<FilterResult> {
+        match where_clause {
+            Some(where_expr) => {
+                // Use cached WHERE result if available, otherwise evaluate
+                let filter_result = if let Some(cached) = where_result_cached {
+                    cached
+                } else {
+                    // Build column map for expression evaluation
+                    let column_map = Self::build_column_map(&columns, table_name);
+                    let eval_ctx = EvaluationContext::with_default_table(
+                        column_map,
+                        row_count,
+                        table_name.to_string(),
+                    );
 
-                // Evaluate WHERE clause to get filter mask
-                let filter_result = ExpressionEvaluator::evaluate(where_expr, &ctx, &mut cse)?;
-                let indices: Vec<usize> = match filter_result {
+                    // Create CSE context with pre-computed values
+                    let mut cse = CseContext::new();
+                    for (hash, data) in pre_computed {
+                        cse.computed.insert(*hash, data.clone());
+                    }
+
+                    // Evaluate WHERE to get filter mask
+                    ExpressionEvaluator::evaluate(where_expr, &eval_ctx, &mut cse)?
+                };
+
+                let passing_indices: Vec<usize> = match filter_result {
                     ColumnData::Bool(mask) => {
                         let iter = mask
                             .into_iter()
                             .enumerate()
                             .filter_map(|(i, passes)| if passes { Some(i) } else { None });
+
                         if let Some(limit) = early_limit {
                             iter.take(limit).collect()
                         } else {
@@ -815,60 +977,112 @@ impl QueryExecutor {
                     _ => anyhow::bail!("WHERE clause must evaluate to BOOL"),
                 };
 
-                let filtered: HashMap<String, ColumnData> = columns
+                let filtered_count = passing_indices.len();
+                let filtered_columns = columns
                     .into_iter()
-                    .map(|(name, data)| (name, Self::filter_column_data(data, &indices)))
+                    .map(|(name, data)| (name, Self::filter_column_data(data, &passing_indices)))
                     .collect();
-                let len = indices.len();
-                (filtered, len, Some(indices))
-            } else if let Some(limit) = early_limit
-                && limit < row_count
-            {
-                let limited: HashMap<String, ColumnData> = columns
-                    .into_iter()
-                    .map(|(name, data)| (name, Self::take_first_n(data, limit)))
-                    .collect();
-                (limited, limit, None)
-            } else {
-                (columns, row_count, None)
-            };
 
-        // Build final context and evaluate column expressions
-        let mut column_map = HashMap::new();
-        for (col_name, data) in &final_columns {
-            column_map.insert((table_name.to_string(), col_name.clone()), data);
+                Ok((filtered_columns, filtered_count, Some(passing_indices)))
+            }
+            None => {
+                // No WHERE clause - apply early limit if present
+                if let Some(limit) = early_limit
+                    && limit < row_count
+                {
+                    let limited_columns = columns
+                        .into_iter()
+                        .map(|(name, data)| (name, Self::take_first_n(data, limit)))
+                        .collect();
+                    Ok((limited_columns, limit, None))
+                } else {
+                    Ok((columns, row_count, None))
+                }
+            }
         }
-        let ctx = EvaluationContext::with_default_table(
-            column_map,
-            final_row_count,
-            table_name.to_string(),
-        );
+    }
 
+    /// Evaluate SELECT expressions
+    fn compute_output_projection(
+        columns: &HashMap<String, ColumnData>,
+        row_count: usize,
+        table_name: &str,
+        column_clauses: &[ColumnExpression],
+        pre_computed: HashMap<u64, ColumnData>,
+        passing_indices: Option<&[usize]>,
+    ) -> Result<Vec<ColumnData>> {
+        let column_map = Self::build_column_map(columns, table_name);
+        let eval_ctx =
+            EvaluationContext::with_default_table(column_map, row_count, table_name.to_string());
+
+        // Build CSE context with pre-computed values
         let mut cse = CseContext::new();
-
-        // If we have pre-computed expressions and we filtered rows, we need to
-        // filter the pre-computed data as well
-        if let Some(ref indices) = passing_indices {
+        if let Some(indices) = passing_indices {
             for (hash, data) in pre_computed {
-                let filtered_data = Self::filter_column_data(data, indices);
-                cse.computed.insert(hash, filtered_data);
+                cse.computed
+                    .insert(hash, Self::filter_column_data(data, indices));
             }
         } else if !pre_computed.is_empty() {
-            // No filtering happened, use pre-computed data as-is
-            if early_limit.is_some() && final_row_count < row_count {
-                for (hash, data) in pre_computed {
-                    let limited_data = Self::take_first_n(data, final_row_count);
-                    cse.computed.insert(hash, limited_data);
-                }
-            } else {
-                cse.computed = pre_computed;
+            // No filtering happened - check if we need to limit
+            for (hash, data) in pre_computed {
+                let adjusted_data = if data.len() > row_count {
+                    Self::take_first_n(data, row_count)
+                } else {
+                    data
+                };
+                cse.computed.insert(hash, adjusted_data);
             }
         }
 
         column_clauses
             .iter()
-            .map(|expr| ExpressionEvaluator::evaluate(expr, &ctx, &mut cse))
+            .map(|expr| ExpressionEvaluator::evaluate(expr, &eval_ctx, &mut cse))
             .collect()
+    }
+
+    /// Merge results from multiple parallel workers
+    fn merge_worker_results(results: Vec<WorkerResult>, num_columns: usize) -> Vec<ColumnData> {
+        if results.is_empty() {
+            return vec![ColumnData::Int64(Vec::new()); num_columns];
+        }
+
+        // Initialize output columns based on the first non-empty result
+        let first_result = results.iter().find(|r| r.is_some());
+
+        let mut merged: Vec<ColumnData> = if let Some(first) = first_result {
+            first
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|col| match col {
+                    ColumnData::Int64(_) => ColumnData::Int64(Vec::new()),
+                    ColumnData::Varchar(_) => ColumnData::Varchar(Vec::new()),
+                    ColumnData::Bool(_) => ColumnData::Bool(Vec::new()),
+                })
+                .collect()
+        } else {
+            // All results are empty
+            return vec![ColumnData::Int64(Vec::new()); num_columns];
+        };
+
+        // Merge all worker results, skipping empty ones
+        for columns in results.into_iter().flatten() {
+            for (i, col) in columns.into_iter().enumerate() {
+                Self::extend_column_data(&mut merged[i], col);
+            }
+        }
+
+        merged
+    }
+
+    /// Extend column data with additional data
+    fn extend_column_data(dest: &mut ColumnData, src: ColumnData) {
+        match (dest, src) {
+            (ColumnData::Int64(d), ColumnData::Int64(s)) => d.extend(s),
+            (ColumnData::Varchar(d), ColumnData::Varchar(s)) => d.extend(s),
+            (ColumnData::Bool(d), ColumnData::Bool(s)) => d.extend(s),
+            _ => {} // Type mismatch - should not happen with valid data
+        }
     }
 
     /// Filter column data to only include rows at the specified indices
