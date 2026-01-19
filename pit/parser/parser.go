@@ -14,7 +14,7 @@ package parser
 //go:generate pigeon -o parser_gen.go grammar.peg
 
 import (
-	openapi "github.com/smogork/ISBD-MIMUW/pit/client"
+	openapi "github.com/smogork/ISBD-MIMUW/pit/client/openapi2"
 )
 
 // ParseSQL parses a SQL SELECT query string and returns an openapi.SelectQuery.

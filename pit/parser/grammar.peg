@@ -15,14 +15,14 @@
 //   - Arithmetic operators: +, -, *, /
 //   - Comparison operators: =, <>, !=, <, <=, >, >=
 //   - Logical operators: AND, OR, NOT
-//   - Functions: STRLEN, CONCAT, UPPER, LOWER
+//   - Functions: STRLEN, CONCAT, REPLACE, UPPER, LOWER
 //   - Literals: integers, strings, TRUE, FALSE
 //   - Column references: column or table.column
 
 package parser
 
 import (
-    openapi "github.com/smogork/ISBD-MIMUW/pit/client"
+    openapi "github.com/smogork/ISBD-MIMUW/pit/client/openapi2"
 )
 }
 
@@ -30,9 +30,13 @@ import (
 // Entry Point
 // ============================================================================
 
-Query <- _ "SELECT"i _ columns:ColumnList from:FromClause? where:WhereClause? 
+// When FROM is missing => return error
+Query <- _ SELECT_K _ columns:ColumnList _ EOF {
+    return nil, fmt.Errorf("FROM clause is required")
+}
+/ _ SELECT_K _ columns:ColumnList from:FromClause where:WhereClause? 
          orderBy:OrderByClause? limit:LimitClause? _ ';'? _ EOF {
-    return buildQuery(columns, from, where, orderBy, limit), nil
+    return buildQuery(columns, from, where, orderBy, limit)
 }
 
 // ============================================================================
@@ -43,24 +47,23 @@ ColumnList <- first:Expr rest:( _ ',' _ e:Expr { return e, nil } )* {
     return buildColumnList(first, rest), nil
 }
 
-FromClause <- _ "FROM"i _ first:Identifier rest:( _ ',' _ name:Identifier { return name, nil } )* {
-    s := first.(string)
-    return &s, nil
+FromClause <- _ FROM_K _ first:Identifier rest:( _ ',' _ name:Identifier { return name, nil } )* {
+    return buildFromClause(first, rest), nil
 }
 
-WhereClause <- _ "WHERE"i _ expr:Expr {
+WhereClause <- _ WHERE_K _ expr:Expr {
     return expr, nil
 }
 
-OrderByClause <- _ "ORDER"i _ "BY"i _ first:OrderByItem rest:( _ ',' _ o:OrderByItem { return o, nil } )* {
+OrderByClause <- _ ORDER_K _ BY_K _ first:OrderByItem rest:( _ ',' _ o:OrderByItem { return o, nil } )* {
     return buildOrderByList(first, rest), nil
 }
 
-OrderByItem <- idx:Integer dir:( _ d:("ASC"i / "DESC"i) { return string(c.text), nil } )? {
+OrderByItem <- idx:Integer dir:( _ d:(ASC_K / DESC_K) { return string(c.text), nil } )? {
     return buildOrderByItem(idx, dir), nil
 }
 
-LimitClause <- _ "LIMIT"i _ n:Integer {
+LimitClause <- _ LIMIT_K _ n:Integer {
     return buildLimitClause(n), nil
 }
 
@@ -70,11 +73,11 @@ LimitClause <- _ "LIMIT"i _ n:Integer {
 
 Expr <- OrExpr
 
-OrExpr <- first:AndExpr rest:( _ "OR"i ![a-zA-Z0-9_] _ e:AndExpr { return e, nil } )* {
+OrExpr <- first:AndExpr rest:( _ OR_K _ e:AndExpr { return e, nil } )* {
     return buildBinaryChain(first, rest, "OR"), nil
 }
 
-AndExpr <- first:Comparison rest:( _ "AND"i ![a-zA-Z0-9_] _ e:Comparison { return e, nil } )* {
+AndExpr <- first:Comparison rest:( _ AND_K _ e:Comparison { return e, nil } )* {
     return buildBinaryChain(first, rest, "AND"), nil
 }
 
@@ -106,7 +109,7 @@ Unary <- op:UnaryOp? _ primary:Primary {
     return buildUnary(op, primary), nil
 }
 
-UnaryOp <- op:( "NOT"i / '-' ) _ {
+UnaryOp <- op:( NOT_K / '-' ) _ {
     return string(c.text), nil
 }
 
@@ -142,7 +145,7 @@ FunctionCall <- name:FunctionName _ '(' _ args:FunctionArgs? _ ')' {
     return buildFunction(name, args), nil
 }
 
-FunctionName <- ( "STRLEN"i / "CONCAT"i / "UPPER"i / "LOWER"i ) {
+FunctionName <- ( "STRLEN"i / "CONCAT"i / "UPPER"i / "LOWER"i / "REPLACE"i ) {
     return string(c.text), nil
 }
 
@@ -158,13 +161,34 @@ ColumnRef <- table:( name:Identifier '.' { return name, nil } )? column:Identifi
 // Lexical Elements
 // ============================================================================
 
+// Keyword tokens with explicit word-boundary check to avoid matching prefixes
+SELECT_K <- "SELECT"i ![a-zA-Z0-9_] { return string(c.text), nil }
+FROM_K   <- "FROM"i   ![a-zA-Z0-9_] { return string(c.text), nil }
+WHERE_K  <- "WHERE"i  ![a-zA-Z0-9_] { return string(c.text), nil }
+ORDER_K  <- "ORDER"i  ![a-zA-Z0-9_] { return string(c.text), nil }
+BY_K     <- "BY"i     ![a-zA-Z0-9_] { return string(c.text), nil }
+ASC_K    <- "ASC"i    ![a-zA-Z0-9_] { return string(c.text), nil }
+DESC_K   <- "DESC"i   ![a-zA-Z0-9_] { return string(c.text), nil }
+LIMIT_K  <- "LIMIT"i  ![a-zA-Z0-9_] { return string(c.text), nil }
+AND_K    <- "AND"i    ![a-zA-Z0-9_] { return string(c.text), nil }
+OR_K     <- "OR"i     ![a-zA-Z0-9_] { return string(c.text), nil }
+NOT_K    <- "NOT"i    ![a-zA-Z0-9_] { return string(c.text), nil }
+TRUE_K   <- "TRUE"i   ![a-zA-Z0-9_] { return string(c.text), nil }
+FALSE_K  <- "FALSE"i  ![a-zA-Z0-9_] { return string(c.text), nil }
+
+STRLEN_K <- "STRLEN"i ![a-zA-Z0-9_] { return string(c.text), nil }
+CONCAT_K <- "CONCAT"i ![a-zA-Z0-9_] { return string(c.text), nil }
+REPLACE_K <- "REPLACE"i ![a-zA-Z0-9_] { return string(c.text), nil }
+UPPER_K  <- "UPPER"i  ![a-zA-Z0-9_] { return string(c.text), nil }
+LOWER_K  <- "LOWER"i  ![a-zA-Z0-9_] { return string(c.text), nil }
+
 Identifier <- !ReservedWord [a-zA-Z_] [a-zA-Z0-9_]* {
     return string(c.text), nil
 }
 
-ReservedWord <- ( "SELECT"i / "FROM"i / "WHERE"i / "ORDER"i / "BY"i / "ASC"i / "DESC"i / 
-                 "LIMIT"i / "AND"i / "OR"i / "NOT"i / "TRUE"i / "FALSE"i /
-                 "STRLEN"i / "CONCAT"i / "UPPER"i / "LOWER"i ) ![a-zA-Z0-9_]
+ReservedWord <- ( SELECT_K / FROM_K / WHERE_K / ORDER_K / BY_K / ASC_K / DESC_K / 
+                 LIMIT_K / AND_K / OR_K / NOT_K / TRUE_K / FALSE_K /
+                 STRLEN_K / CONCAT_K / UPPER_K / LOWER_K / REPLACE_K )
 
 Integer <- [0-9]+ {
     return parseInt(string(c.text)), nil

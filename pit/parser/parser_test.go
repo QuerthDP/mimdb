@@ -3,6 +3,8 @@ package parser
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseSimpleSelect(t *testing.T) {
@@ -120,14 +122,14 @@ func TestParseOrderByAndLimit(t *testing.T) {
 }
 
 func TestParseFunctions(t *testing.T) {
-	input := "SELECT UPPER(name), STRLEN(description), CONCAT(a, b)"
+	input := "SELECT UPPER(name), STRLEN(description), CONCAT(a, b), REPLACE(c, 'old', 'new') FROM t1"
 	query, err := ParseSQL(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(query.ColumnClauses) != 3 {
-		t.Errorf("expected 3 column clauses, got %d", len(query.ColumnClauses))
+	if len(query.ColumnClauses) != 4 {
+		t.Errorf("expected 4 column clauses, got %d", len(query.ColumnClauses))
 		return
 	}
 
@@ -157,10 +159,23 @@ func TestParseFunctions(t *testing.T) {
 			t.Errorf("expected 2 arguments for CONCAT, got %d", len(f.Arguments))
 		}
 	}
+
+	// Fourth: REPLACE(c, 'old', 'new')
+	if query.ColumnClauses[3].Function == nil {
+		t.Error("expected Function for fourth column")
+	} else {
+		f := query.ColumnClauses[3].Function
+		if *f.FunctionName != "REPLACE" {
+			t.Errorf("expected REPLACE function, got %s", *f.FunctionName)
+		}
+		if len(f.Arguments) != 3 {
+			t.Errorf("expected 3 arguments for REPLACE, got %d", len(f.Arguments))
+		}
+	}
 }
 
 func TestParseLiterals(t *testing.T) {
-	input := "SELECT 42, 'hello', TRUE, FALSE"
+	input := "SELECT 42, 'hello', TRUE, FALSE FROM t1"
 	query, err := ParseSQL(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -227,7 +242,7 @@ func TestParseTableQualifiedColumn(t *testing.T) {
 }
 
 func TestParseUnaryOperators(t *testing.T) {
-	input := "SELECT -a, NOT b"
+	input := "SELECT -a, NOT b FROM t1"
 	query, err := ParseSQL(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -255,7 +270,7 @@ func TestParseUnaryOperators(t *testing.T) {
 
 func TestParseComplexExpression(t *testing.T) {
 	// (a + b) * c - d / e
-	input := "SELECT (a + b) * c - d / e"
+	input := "SELECT (a + b) * c - d / e FROM t1"
 	query, err := ParseSQL(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -294,4 +309,104 @@ func TestJSONOutput(t *testing.T) {
 	if _, ok := result["columnClauses"]; !ok {
 		t.Error("expected 'columnClauses' in JSON output")
 	}
+}
+
+func TestMultipleFromClauses(t *testing.T) {
+	input := "SELECT t1.c1, t2.c2 FROM t1, t2"
+	query, err := ParseSQL(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	require.Equal(t, "t1", *query.ColumnClauses[0].ColumnReferenceExpression.TableName)
+	require.Equal(t, "t2", *query.ColumnClauses[1].ColumnReferenceExpression.TableName)
+	require.Equal(t, "c1", *query.ColumnClauses[0].ColumnReferenceExpression.ColumnName)
+	require.Equal(t, "c2", *query.ColumnClauses[1].ColumnReferenceExpression.ColumnName)
+}
+
+func TestMultipleFromClausesDisambigous(t *testing.T) {
+	input := "SELECT t1.c1, c2 FROM t1, t2"
+	query, err := ParseSQL(input)
+	require.Nil(t, query)
+	require.ErrorContains(t, err, "cannot guess table name for column c2 with multiple FROM tables")
+}
+
+func TestTableGuessing(t *testing.T) {
+	input := "SELECT c1, c2 FROM t1"
+	query, err := ParseSQL(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	require.Equal(t, "t1", *query.ColumnClauses[0].ColumnReferenceExpression.TableName)
+	require.Equal(t, "t1", *query.ColumnClauses[1].ColumnReferenceExpression.TableName)
+	require.Equal(t, "c1", *query.ColumnClauses[0].ColumnReferenceExpression.ColumnName)
+	require.Equal(t, "c2", *query.ColumnClauses[1].ColumnReferenceExpression.ColumnName)
+}
+
+func TestTableGuessingInOperands(t *testing.T) {
+	input := "SELECT c1+c2 FROM t1"
+	query, err := ParseSQL(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	require.Equal(t, "t1", *query.ColumnClauses[0].ColumnarBinaryOperation.LeftOperand.ColumnReferenceExpression.TableName)
+	require.Equal(t, "t1", *query.ColumnClauses[0].ColumnarBinaryOperation.RightOperand.ColumnReferenceExpression.TableName)
+	require.Equal(t, "c1", *query.ColumnClauses[0].ColumnarBinaryOperation.LeftOperand.ColumnReferenceExpression.ColumnName)
+	require.Equal(t, "c2", *query.ColumnClauses[0].ColumnarBinaryOperation.RightOperand.ColumnReferenceExpression.ColumnName)
+}
+
+func TestTableGuessingInUnaryOperand(t *testing.T) {
+	input := "SELECT -c1 FROM t1"
+	query, err := ParseSQL(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	require.Equal(t, "t1", *query.ColumnClauses[0].ColumnarUnaryOperation.Operand.ColumnReferenceExpression.TableName)
+	require.Equal(t, "c1", *query.ColumnClauses[0].ColumnarUnaryOperation.Operand.ColumnReferenceExpression.ColumnName)
+}
+
+func TestTableGuessingInFunction(t *testing.T) {
+	input := "SELECT STRLEN(c1) FROM t1"
+	query, err := ParseSQL(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	require.Equal(t, "t1", *query.ColumnClauses[0].Function.Arguments[0].ColumnReferenceExpression.TableName)
+	require.Equal(t, "c1", *query.ColumnClauses[0].Function.Arguments[0].ColumnReferenceExpression.ColumnName)
+}
+
+func TestMissingFrom(t *testing.T) {
+	input := "SELECT c1"
+	query, err := ParseSQL(input)
+	require.Nil(t, query)
+	require.ErrorContains(t, err, "FROM clause is required")
+}
+
+func TestWhereClause(t *testing.T) {
+	input := "SELECT c1 FROM t1 WHERE c1 = 10"
+	query, err := ParseSQL(input)
+	require.NoError(t, err)
+
+	require.Equal(t, "c1", *query.WhereClause.ColumnarBinaryOperation.LeftOperand.ColumnReferenceExpression.ColumnName)
+	require.Equal(t, "t1", *query.WhereClause.ColumnarBinaryOperation.LeftOperand.ColumnReferenceExpression.TableName)
+	require.Equal(t, int64(10), *query.WhereClause.ColumnarBinaryOperation.RightOperand.Literal.Value.Int64)
+	require.Equal(t, "EQUAL", *query.WhereClause.ColumnarBinaryOperation.Operator)
+}
+
+func TestWhereWithOrder(t *testing.T) {
+	input := "SELECT c1 FROM t1 WHERE c1 = 10 ORDER BY 0 ASC"
+	query, err := ParseSQL(input)
+	require.NoError(t, err)
+
+	require.Equal(t, "c1", *query.WhereClause.ColumnarBinaryOperation.LeftOperand.ColumnReferenceExpression.ColumnName)
+	require.Equal(t, "t1", *query.WhereClause.ColumnarBinaryOperation.LeftOperand.ColumnReferenceExpression.TableName)
+	require.Equal(t, int64(10), *query.WhereClause.ColumnarBinaryOperation.RightOperand.Literal.Value.Int64)
+	require.Equal(t, "EQUAL", *query.WhereClause.ColumnarBinaryOperation.Operator)
+
+	require.Equal(t, int32(0), *query.OrderByClause[0].ColumnIndex)
+	require.True(t, *query.OrderByClause[0].Ascending)
 }

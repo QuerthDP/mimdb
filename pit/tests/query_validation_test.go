@@ -12,6 +12,7 @@ import (
 // ============================================================================
 
 func TestQueryValidation_ColumnReferences(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "people")
@@ -36,6 +37,7 @@ func TestQueryValidation_ColumnReferences(t *testing.T) {
 // ============================================================================
 
 func TestQueryValidation_ArithmeticOperators(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "people")
@@ -62,6 +64,7 @@ func TestQueryValidation_ArithmeticOperators(t *testing.T) {
 // ============================================================================
 
 func TestQueryValidation_LogicalOperators(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "people")
@@ -86,6 +89,7 @@ func TestQueryValidation_LogicalOperators(t *testing.T) {
 // ============================================================================
 
 func TestQueryValidation_ComparisonOperators(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "people")
@@ -115,6 +119,7 @@ func TestQueryValidation_ComparisonOperators(t *testing.T) {
 // ============================================================================
 
 func TestQueryValidation_Functions(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "people")
@@ -143,6 +148,7 @@ func TestQueryValidation_Functions(t *testing.T) {
 // ============================================================================
 
 func TestQueryValidation_WhereClause(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "people")
@@ -170,6 +176,7 @@ func TestQueryValidation_WhereClause(t *testing.T) {
 // ============================================================================
 
 func TestQueryValidation_OrderBy(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "people")
@@ -193,6 +200,7 @@ func TestQueryValidation_OrderBy(t *testing.T) {
 // ============================================================================
 
 func TestQueryValidation_UnaryMinus(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "people")
@@ -212,6 +220,7 @@ func TestQueryValidation_UnaryMinus(t *testing.T) {
 // ============================================================================
 
 func TestQueryValidation_Literals(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "people")
@@ -234,6 +243,7 @@ func TestQueryValidation_Literals(t *testing.T) {
 // ============================================================================
 
 func TestQueryValidation_ComplexQueries(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "people")

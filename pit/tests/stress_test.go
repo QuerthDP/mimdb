@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/smogork/ISBD-MIMUW/pit"
-	apiclient "github.com/smogork/ISBD-MIMUW/pit/client"
+	apiclient "github.com/smogork/ISBD-MIMUW/pit/client/openapi2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,30 +22,24 @@ const (
 	// Number of rows in the stress_rows table
 	stressTableRows = 8192
 
-	// Base string length for CONCAT operations (power of 2 for clean calculations)
+	// Base string length for REPLACE operations (power of 2 for clean calculations)
 	baseStringLength = 128
 )
 
-// Base string used for CONCAT operations (~100 characters of 'a')
-var baseString = strings.Repeat("a", baseStringLength)
+// Base string used for REPLACE operations (~100 characters of 'a')
+var baseString = "a"
 
 // ============================================================================
-// Helper Functions - Exponential CONCAT
+// Helper Functions - Exponential REPLACE
 // ============================================================================
 
-// buildExponentialConcat builds a SQL expression that doubles in size at each level
-// depth=1: 'aaa...'                                     → 100 chars
-// depth=2: CONCAT('aaa...', 'aaa...')                   → 200 chars
-// depth=3: CONCAT(CONCAT(...), CONCAT(...))             → 400 chars
-// depth=4: ...                                          → 800 chars
-// Result size per row = baseStringLength * 2^(depth-1)
-func buildExponentialConcat(depth int) string {
+func buildExponentialReplace(depth int) string {
 	if depth <= 1 {
 		return fmt.Sprintf("'%s'", baseString)
 	}
 
-	subExpr := buildExponentialConcat(depth - 1)
-	return fmt.Sprintf("CONCAT(%s, %s)", subExpr, subExpr)
+	subExpr := buildExponentialReplace(depth - 1)
+	return fmt.Sprintf("REPLACE(%s, 'a', 'aa')", subExpr)
 }
 
 // calculateExponentialDepth calculates the exact depth (as float) needed for targetBytes
@@ -101,6 +95,7 @@ func runStressQuery(t *testing.T, dbClient *apiclient.APIClient, ctx context.Con
 // ============================================================================
 
 func TestStress_SortLargeData(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	if DbMemoryBytes <= 0 {
 		t.Skip("Skipping stress test: -db-memory flag not set")
 	}
@@ -126,8 +121,8 @@ func TestStress_SortLargeData(t *testing.T) {
 	t.Logf("  Rows: %d", stressTableRows)
 
 	// Build the query with LIMIT 1 to minimize result storage
-	concatExpr := buildExponentialConcat(depth)
-	sql := fmt.Sprintf("SELECT %s FROM stress_rows ORDER BY 0 ASC LIMIT 1", concatExpr)
+	replaceExpr := buildExponentialReplace(depth)
+	sql := fmt.Sprintf("SELECT %s FROM stress_rows ORDER BY 0 ASC LIMIT 1", replaceExpr)
 
 	t.Logf("Query length: %d chars", len(sql))
 
@@ -135,6 +130,7 @@ func TestStress_SortLargeData(t *testing.T) {
 }
 
 func TestStress_SortLargeData_Descending(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	if DbMemoryBytes <= 0 {
 		t.Skip("Skipping stress test: -db-memory flag not set")
 	}
@@ -152,13 +148,14 @@ func TestStress_SortLargeData_Descending(t *testing.T) {
 	t.Logf("Testing DESC sort with depth %d (exact %.2f), estimated %.2f MB",
 		depth, exactDepth, float64(estimateExponentialDataSize(depth))/(1024*1024))
 
-	concatExpr := buildExponentialConcat(depth)
-	sql := fmt.Sprintf("SELECT %s FROM stress_rows ORDER BY 0 DESC LIMIT 1", concatExpr)
+	replaceExpr := buildExponentialReplace(depth)
+	sql := fmt.Sprintf("SELECT %s FROM stress_rows ORDER BY 0 DESC LIMIT 1", replaceExpr)
 
 	runStressQuery(t, dbClient, ctx, sql, 5*time.Minute)
 }
 
 func TestStress_SortMultipleColumns(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	if DbMemoryBytes <= 0 {
 		t.Skip("Skipping stress test: -db-memory flag not set")
 	}
@@ -177,9 +174,9 @@ func TestStress_SortMultipleColumns(t *testing.T) {
 	t.Logf("Testing multi-column sort, depth %d, estimated %.2f MB total",
 		depth, float64(estimateExponentialDataSize(depth)*2)/(1024*1024))
 
-	concatExpr1 := buildExponentialConcat(depth)
-	concatExpr2 := buildExponentialConcat(depth)
-	sql := fmt.Sprintf("SELECT %s, %s FROM stress_rows ORDER BY 0 ASC, 1 DESC LIMIT 1", concatExpr1, concatExpr2)
+	replaceExpr1 := buildExponentialReplace(depth)
+	replaceExpr2 := buildExponentialReplace(depth)
+	sql := fmt.Sprintf("SELECT %s, %s FROM stress_rows ORDER BY 0 ASC, 1 DESC LIMIT 1", replaceExpr1, replaceExpr2)
 
 	runStressQuery(t, dbClient, ctx, sql, 10*time.Minute)
 }
@@ -189,6 +186,7 @@ func TestStress_SortMultipleColumns(t *testing.T) {
 // ============================================================================
 
 func TestStress_Incremental(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	if DbMemoryBytes <= 0 {
 		t.Skip("Skipping stress test: -db-memory flag not set")
 	}
@@ -205,7 +203,7 @@ func TestStress_Incremental(t *testing.T) {
 	for _, mult := range multipliers {
 		mult := mult
 		testName := fmt.Sprintf("%.1fx_memory", mult)
-		t.Run(testName, func(t *testing.T) {
+		RunTracked(t, testName, func(t *testing.T) {
 			targetBytes := int64(float64(DbMemoryBytes) * mult)
 			exactDepth := calculateExponentialDepth(targetBytes)
 			depth := int(math.Ceil(exactDepth))
@@ -214,8 +212,8 @@ func TestStress_Incremental(t *testing.T) {
 			t.Logf("Target: %.1fx memory = %d bytes, exact depth=%.2f, using=%d, estimated=%.2f MB",
 				mult, targetBytes, exactDepth, depth, float64(estimatedSize)/(1024*1024))
 
-			concatExpr := buildExponentialConcat(depth)
-			sql := fmt.Sprintf("SELECT %s, id FROM stress_rows ORDER BY 0 ASC LIMIT 1", concatExpr)
+			replaceExpr := buildExponentialReplace(depth)
+			sql := fmt.Sprintf("SELECT %s, id FROM stress_rows ORDER BY 0 ASC LIMIT 1", replaceExpr)
 
 			runStressQuery(t, dbClient, ctx, sql, 5*time.Minute)
 		})
@@ -227,13 +225,14 @@ func TestStress_Incremental(t *testing.T) {
 // ============================================================================
 
 // TestStress_CSE tests whether the database can eliminate common subexpressions.
-// The same CONCAT chain appears 11 times:
+// The same REPLACE chain appears 11 times:
 //   - 10 times in SELECT: STRLEN(chain) + STRLEN(chain) + ... (10x)
 //   - 1 time in WHERE: STRLEN(chain) > 0
 //
 // Without CSE: 11 * 0.1 = 1.1x memory needed (exceeds available!)
 // With CSE: only 0.1x memory needed (computed once, reused)
 func TestStress_CSE(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	if DbMemoryBytes <= 0 {
 		t.Skip("Skipping stress test: -db-memory flag not set")
 	}
@@ -265,11 +264,11 @@ func TestStress_CSE(t *testing.T) {
 		float64(estimatedSingleSize)/float64(DbMemoryBytes))
 
 	// Build the query with the same expression used 11 times
-	concatExpr := buildExponentialConcat(depth)
+	replaceExpr := buildExponentialReplace(depth)
 
 	// SELECT: STRLEN(expr) + STRLEN(expr) + ... (10 times)
 	// WHERE: STRLEN(expr) > 0 (always true)
-	strlenExpr := fmt.Sprintf("STRLEN(%s)", concatExpr)
+	strlenExpr := fmt.Sprintf("STRLEN(%s)", replaceExpr)
 	selectParts := make([]string, 10)
 	for i := 0; i < 10; i++ {
 		selectParts[i] = strlenExpr
@@ -278,9 +277,9 @@ func TestStress_CSE(t *testing.T) {
 
 	sql := fmt.Sprintf(
 		"SELECT %s, id FROM stress_rows WHERE STRLEN(%s) > 0",
-		selectExpr, concatExpr)
+		selectExpr, replaceExpr)
 
-	t.Logf("Query uses same CONCAT expression 11 times (10 in SELECT + 1 in WHERE)")
+	t.Logf("Query uses same REPLACE expression 11 times (10 in SELECT + 1 in WHERE)")
 	t.Logf("Query length: %d chars", len(sql))
 
 	runStressQuery(t, dbClient, ctx, sql, 5*time.Minute)
@@ -288,11 +287,12 @@ func TestStress_CSE(t *testing.T) {
 }
 
 // TestStress_CSE_SelectOnly tests CSE with expressions only in SELECT clause.
-// The same CONCAT chain appears 10 times in SELECT only.
+// The same REPLACE chain appears 10 times in SELECT only.
 //
 // Without CSE: 10 * 0.1 = 1.0x memory needed (at the limit!)
 // With CSE: only 0.1x memory needed (computed once, reused)
 func TestStress_CSE_SelectOnly(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	if DbMemoryBytes <= 0 {
 		t.Skip("Skipping stress test: -db-memory flag not set")
 	}
@@ -324,10 +324,10 @@ func TestStress_CSE_SelectOnly(t *testing.T) {
 		float64(estimatedSingleSize)/float64(DbMemoryBytes))
 
 	// Build the query with the same expression used 10 times in SELECT only
-	concatExpr := buildExponentialConcat(depth)
+	replaceExpr := buildExponentialReplace(depth)
 
 	// SELECT: STRLEN(expr) + STRLEN(expr) + ... (10 times)
-	strlenExpr := fmt.Sprintf("STRLEN(%s)", concatExpr)
+	strlenExpr := fmt.Sprintf("STRLEN(%s)", replaceExpr)
 	selectParts := make([]string, 10)
 	for i := 0; i < 10; i++ {
 		selectParts[i] = strlenExpr
@@ -336,7 +336,7 @@ func TestStress_CSE_SelectOnly(t *testing.T) {
 
 	sql := fmt.Sprintf("SELECT %s, id FROM stress_rows", selectExpr)
 
-	t.Logf("Query uses same CONCAT expression 10 times (all in SELECT)")
+	t.Logf("Query uses same REPLACE expression 10 times (all in SELECT)")
 	t.Logf("Query length: %d chars", len(sql))
 
 	runStressQuery(t, dbClient, ctx, sql, 5*time.Minute)

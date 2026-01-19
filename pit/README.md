@@ -113,9 +113,9 @@ go test ./tests -run "CSE" -db-memory 10485760 -v
 
 Example query structure:
 ```sql
-SELECT id, STRLEN(concat_expr) + STRLEN(concat_expr) + ... (10x)
+SELECT id, STRLEN(replace_expr) + STRLEN(replace_expr) + ... (10x)
 FROM stress_rows 
-WHERE STRLEN(concat_expr) > 0
+WHERE STRLEN(replace_expr) > 0
 ```
 
 ## Test Categories

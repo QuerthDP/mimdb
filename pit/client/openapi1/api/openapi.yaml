@@ -1,0 +1,653 @@
+openapi: 3.0.3
+info:
+  description: This file describes interface between DBMS system and user.
+  title: MIMUW ISBD database system
+  version: 1.0.1
+servers:
+- url: /
+tags:
+- description: Endpoints used to access schema structure
+  name: schema
+- description: Endpoints used to control query execution
+  name: execution
+- description: Endpoint to implement in project 3
+  name: proj3
+- description: Endpoint to implement in project 4
+  name: proj4
+- description: Endpoints used to access metadata information about the system
+  name: metadata
+- description: Endpoints from extensions (not required)
+  name: extension
+paths:
+  /tables:
+    get:
+      operationId: getTables
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/ShallowTable"
+                type: array
+          description: Array of tables in database
+      summary: Get list of tables with their accompanying IDs. Use those IDs to get
+        details by calling /table endpoint.
+      tags:
+      - schema
+      - proj3
+  /table/{tableId}:
+    delete:
+      operationId: deleteTable
+      parameters:
+      - description: ID of selected Table
+        explode: false
+        in: path
+        name: tableId
+        required: true
+        schema:
+          $ref: "#/components/schemas/TableID"
+        style: simple
+      responses:
+        "200":
+          description: Table has been deleted successfully
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+          description: Generic error
+      summary: Delete selected table from database
+      tags:
+      - schema
+      - proj3
+    get:
+      operationId: getTableById
+      parameters:
+      - description: ID of selected Table
+        explode: false
+        in: path
+        name: tableId
+        required: true
+        schema:
+          $ref: "#/components/schemas/TableID"
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TableSchema"
+          description: Detailed Table description
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+          description: Generic error
+      summary: Get detailed description of selected table
+      tags:
+      - schema
+      - proj3
+  /table:
+    put:
+      operationId: createTable
+      requestBody:
+        $ref: "#/components/requestBodies/CreateTableRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TableID"
+          description: Table created successfully
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MultipleProblemsError"
+          description: Response used when more problems can occur in the system when
+            processing request
+      summary: Create new table in database
+      tags:
+      - schema
+      - proj3
+  /queries:
+    get:
+      operationId: getQueries
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: "#/components/schemas/ShallowQuery"
+                type: array
+          description: Array of queries submitted to the system
+      summary: "Get list of queries (optional in project 3, but useful). Use those\
+        \ IDs to get details by calling /query endpoint."
+      tags:
+      - execution
+      - proj3
+      - proj4
+  /query/{queryId}:
+    get:
+      operationId: getQueryById
+      parameters:
+      - description: ID of selected Query
+        explode: false
+        in: path
+        name: queryId
+        required: true
+        schema:
+          $ref: "#/components/schemas/QueryID"
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Query"
+          description: Detailed Query description
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+          description: Generic error
+      summary: Get detailed status of selected query
+      tags:
+      - proj3
+      - execution
+  /query:
+    post:
+      operationId: submitQuery
+      requestBody:
+        $ref: "#/components/requestBodies/ExecuteQueryRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryID"
+          description: Query has been created successfully
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MultipleProblemsError"
+          description: Response used when more problems can occur in the system when
+            processing request
+      summary: Submit new query for execution
+      tags:
+      - proj3
+      - execution
+  /result/{queryId}:
+    get:
+      operationId: getQueryResult
+      parameters:
+      - description: ID of selected Query
+        explode: false
+        in: path
+        name: queryId
+        required: true
+        schema:
+          $ref: "#/components/schemas/QueryID"
+        style: simple
+      requestBody:
+        $ref: "#/components/requestBodies/GetQueryResultRequest"
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+          description: Result of selected query
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+          description: Generic error
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+          description: Generic error
+      summary: Get result of selected query (will be available only for SELECT queries
+        after they are completed)
+      tags:
+      - proj3
+      - execution
+  /error/{queryId}:
+    get:
+      operationId: getQueryError
+      parameters:
+      - description: ID of selected Query
+        explode: false
+        in: path
+        name: queryId
+        required: true
+        schema:
+          $ref: "#/components/schemas/QueryID"
+        style: simple
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MultipleProblemsError"
+          description: Response used when more problems can occur in the system when
+            processing request
+        "404":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+          description: Generic error
+        "400":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+          description: Generic error
+      summary: Get error of selected query (will be available only for queries in
+        FAILED state)
+      tags:
+      - proj3
+      - execution
+  /system/info:
+    get:
+      operationId: getSystemInfo
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemInformation"
+          description: Basic information about the system
+      summary: "Get basic information about the system (e.g. version, uptime, etc.)"
+      tags:
+      - metadata
+      - proj3
+components:
+  parameters:
+    TableID:
+      description: ID of selected Table
+      explode: false
+      in: path
+      name: tableId
+      required: true
+      schema:
+        $ref: "#/components/schemas/TableID"
+      style: simple
+    QueryID:
+      description: ID of selected Query
+      explode: false
+      in: path
+      name: queryId
+      required: true
+      schema:
+        $ref: "#/components/schemas/QueryID"
+      style: simple
+  requestBodies:
+    CreateTableRequest:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TableSchema"
+      description: Used to create a new table
+      required: true
+    ExecuteQueryRequest:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ExecuteQueryRequest"
+      description: Used to submit a new query for execution
+      required: true
+    GetQueryResultRequest:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/getQueryResult_request"
+      description: Used to get result of a query
+      required: false
+  responses:
+    GetTablesResponse:
+      content:
+        application/json:
+          schema:
+            items:
+              $ref: "#/components/schemas/ShallowTable"
+            type: array
+      description: Array of tables in database
+    TableCreatedResponse:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TableID"
+      description: Table created successfully
+    GetTableResponse:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TableSchema"
+      description: Detailed Table description
+    QueryCreatedResponse:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/QueryID"
+      description: Query has been created successfully
+    GetQueriesResponse:
+      content:
+        application/json:
+          schema:
+            items:
+              $ref: "#/components/schemas/ShallowQuery"
+            type: array
+      description: Array of queries submitted to the system
+    GetQueryResponse:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Query"
+      description: Detailed Query description
+    QueryResultResponse:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/QueryResult"
+      description: Result of selected query
+    Error:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+      description: Generic error
+    MultipleProblemsError:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/MultipleProblemsError"
+      description: Response used when more problems can occur in the system when processing
+        request
+    SystemInfoResponse:
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SystemInformation"
+      description: Basic information about the system
+  schemas:
+    TableID:
+      description: "ID of selected Table (I propose UUID, but it is under your own\
+        \ discretion)"
+      type: string
+    QueryID:
+      description: "ID of selected Query (I propose UUID, but it is under your own\
+        \ discretion)"
+      type: string
+    LogicalColumnType:
+      description: Enum describing logical column types
+      enum:
+      - INT64
+      - VARCHAR
+      type: string
+    Column:
+      description: Description of single column in table
+      example:
+        name: name
+        type: INT64
+      properties:
+        name:
+          type: string
+        type:
+          $ref: "#/components/schemas/LogicalColumnType"
+      required:
+      - name
+      - type
+    TableSchema:
+      description: Description of the table in the database
+      example:
+        columns:
+        - name: name
+          type: INT64
+        - name: name
+          type: INT64
+        name: name
+      properties:
+        name:
+          type: string
+        columns:
+          items:
+            $ref: "#/components/schemas/Column"
+          type: array
+      required:
+      - columns
+      - name
+    ShallowTable:
+      description: Description of a shallow representation of a table (e.g. without
+        detailed column information)
+      example:
+        name: name
+        tableId: tableId
+      properties:
+        tableId:
+          description: "ID of selected Table (I propose UUID, but it is under your\
+            \ own discretion)"
+          type: string
+        name:
+          type: string
+      required:
+      - name
+    QueryStatus:
+      description: Enum describing possible query statuses
+      enum:
+      - CREATED
+      - PLANNING
+      - RUNNING
+      - COMPLETED
+      - FAILED
+      type: string
+    ShallowQuery:
+      description: Description of a shallow representation of a query
+      example:
+        queryId: queryId
+        status: CREATED
+      properties:
+        queryId:
+          description: "ID of selected Query (I propose UUID, but it is under your\
+            \ own discretion)"
+          type: string
+        status:
+          $ref: "#/components/schemas/QueryStatus"
+      required:
+      - queryId
+      - status
+    Query:
+      description: Description of a query in the system
+      example:
+        isResultAvailable: true
+        queryDefinition:
+          tableName: tableName
+        queryId: queryId
+        status: CREATED
+      properties:
+        queryId:
+          description: "ID of selected Query (I propose UUID, but it is under your\
+            \ own discretion)"
+          type: string
+        status:
+          $ref: "#/components/schemas/QueryStatus"
+        isResultAvailable:
+          description: Whether result of this query is already available
+          type: boolean
+        queryDefinition:
+          $ref: "#/components/schemas/Query_queryDefinition"
+      required:
+      - queryId
+      - queryString
+      - status
+    ExecuteQueryRequest:
+      description: Used to submit a new query for execution
+      example:
+        queryDefinition:
+          tableName: tableName
+      properties:
+        queryDefinition:
+          $ref: "#/components/schemas/Query_queryDefinition"
+      required:
+      - queryDefinition
+    CopyQuery:
+      description: "Description of the COPY query from CSV file. Server will read\
+        \ the file and insert all data into selected table. When number of columns\
+        \ in source and target doesn't match, user have to use \"destinationColumns\"\
+        \ property to specify which columns data should be inserted into."
+      properties:
+        sourceFilepath:
+          description: Path to source CSV file (filepath in perspective of running
+            server! NOT client)
+          type: string
+        destinationTableName:
+          type: string
+        destinationColumns:
+          description: List of columns to copy data into. It creates a map from source
+            columns to destination columns. Assumes that data in source file is in
+            the same order as in this list.
+          items:
+            type: string
+          type: array
+        doesCsvContainHeader:
+          default: false
+          description: Whether CSV file contains header row
+          type: boolean
+      required:
+      - destinationTableName
+      - sourceFilepath
+    SelectQuery:
+      description: Description of a select query (extension in project no 4)
+      example:
+        tableName: tableName
+      properties:
+        tableName:
+          type: string
+    Int64Column:
+      description: Column containing INT64 values
+      items:
+        format: int64
+        type: integer
+      type: array
+    VarcharColumn:
+      description: Column containing VARCHAR values
+      items:
+        type: string
+      type: array
+    QueryResult:
+      description: Result of a query execution (plain json data)
+      items:
+        $ref: "#/components/schemas/QueryResult_inner"
+      type: array
+    MultipleProblemsError:
+      description: Error containing multiple problems about request processing. Useful
+        when processing complex requests where multiple problems can occur at the
+        same time.
+      example:
+        problems:
+        - context: context
+          error: error
+        - context: context
+          error: error
+      properties:
+        problems:
+          items:
+            $ref: "#/components/schemas/MultipleProblemsError_problems_inner"
+          type: array
+      required:
+      - problems
+    Error:
+      description: Generic error object
+      example:
+        message: message
+      properties:
+        message:
+          type: string
+      required:
+      - message
+    SystemInformation:
+      description: Basic information about the system
+      example:
+        author: author
+        interfaceVersion: interfaceVersion
+        version: version
+        uptime: 0
+      properties:
+        interfaceVersion:
+          description: Version of the DBMS interface
+          type: string
+        version:
+          description: Version of the DBMS system
+          type: string
+        author:
+          description: Author of the DBMS system (will help me to automate testing)
+          type: string
+        uptime:
+          description: System uptime in seconds
+          format: int64
+          type: integer
+      required:
+      - author
+      - version
+    getQueryResult_request:
+      properties:
+        rowLimit:
+          description: Maximum number of rows to return
+          format: int32
+          type: integer
+        flushResult:
+          description: Say to system that result will not be accessed by the user
+            anymore (it is safe to release the resources connected with the result)
+          type: boolean
+    Query_queryDefinition:
+      oneOf:
+      - $ref: "#/components/schemas/SelectQuery"
+      - $ref: "#/components/schemas/CopyQuery"
+    QueryResult_inner_columns_inner:
+      oneOf:
+      - $ref: "#/components/schemas/Int64Column"
+      - $ref: "#/components/schemas/VarcharColumn"
+    QueryResult_inner:
+      example:
+        columns:
+        - - 6
+          - 6
+        - - 6
+          - 6
+        rowCount: 0
+      properties:
+        rowCount:
+          description: Number of rows in result
+          format: int32
+          type: integer
+        columns:
+          description: Array of columns in result (all should have the same length
+            equal to rowCount)
+          items:
+            $ref: "#/components/schemas/QueryResult_inner_columns_inner"
+          type: array
+      type: object
+    MultipleProblemsError_problems_inner:
+      example:
+        context: context
+        error: error
+      properties:
+        error:
+          description: Description of particular problem
+          type: string
+        context:
+          description: Optional context for user (for e.g. which column caused problem).
+            It can be helpful for troubleshooting.
+          type: string
+      required:
+      - error
+      type: object

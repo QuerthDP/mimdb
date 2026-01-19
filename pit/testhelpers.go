@@ -9,18 +9,32 @@ import (
 	"path/filepath"
 	"time"
 
-	apiclient "github.com/smogork/ISBD-MIMUW/pit/client"
+	openapi1 "github.com/smogork/ISBD-MIMUW/pit/client/openapi1"
+	openapi2 "github.com/smogork/ISBD-MIMUW/pit/client/openapi2"
 	"github.com/docker/go-connections/nat"
 	tc "github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-func DbClient(url string) *apiclient.APIClient {
-	// Create and configure API client
-	cfg := apiclient.NewConfiguration()
+// DbClient1 creates an API client for interface version 1 (Project 3)
+func DbClient1(url string) *openapi1.APIClient {
+	cfg := openapi1.NewConfiguration()
 	cfg.Servers[0].URL = url
 	cfg.HTTPClient = &http.Client{}
-	return apiclient.NewAPIClient(cfg)
+	return openapi1.NewAPIClient(cfg)
+}
+
+// DbClient2 creates an API client for interface version 2 (Project 4)
+func DbClient2(url string) *openapi2.APIClient {
+	cfg := openapi2.NewConfiguration()
+	cfg.Servers[0].URL = url
+	cfg.HTTPClient = &http.Client{}
+	return openapi2.NewAPIClient(cfg)
+}
+
+// DbClient is an alias for DbClient2 for backward compatibility
+func DbClient(url string) *openapi2.APIClient {
+	return DbClient2(url)
 }
 
 func waitForHTTP(url string, timeout time.Duration) error {
@@ -83,8 +97,8 @@ func StartTestContainer(ctx context.Context) (string, func(), error) {
 	if port == "" {
 		port = "8080"
 	}
-
-	// Get absolute path to tables directory for bind mount
+    
+  // Get absolute path to tables directory for bind mount
 	// The tables directory is at pit/tables, relative to where go test runs (pit/tests)
 	tablesDir, err := filepath.Abs(filepath.Join("..", "tables"))
 	if err != nil {
@@ -96,7 +110,7 @@ func StartTestContainer(ctx context.Context) (string, func(), error) {
 		Image:        image,
 		ExposedPorts: []string{portSpec},
 		WaitingFor:   wait.ForHTTP("/system/info").WithPort(nat.Port(portSpec)).WithStartupTimeout(30 * time.Second),
-		Mounts: tc.Mounts(
+    Mounts: tc.Mounts(
 			tc.BindMount(tablesDir, "/data/tables"),
 		),
 	}

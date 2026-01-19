@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	apiclient "github.com/smogork/ISBD-MIMUW/pit/client"
+	apiclient "github.com/smogork/ISBD-MIMUW/pit/client/openapi2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -92,7 +92,7 @@ func (r *ValidationTestRunner) submitQuery(tc ValidationTestCase) SubmittedValid
 func (r *ValidationTestRunner) RunSync() {
 	for _, tc := range r.cases {
 		tc := tc
-		r.t.Run(tc.Name, func(t *testing.T) {
+		RunTracked(r.t, tc.Name, func(t *testing.T) {
 			submitted := r.submitQuery(tc)
 			if tc.ExpectSuccess {
 				r.assertSuccess(t, submitted)
@@ -124,7 +124,7 @@ func (r *ValidationTestRunner) RunAsync() {
 	// Phase 2: Wait and verify all results
 	for i, submitted := range r.submitted {
 		submitted := submitted
-		r.t.Run(submitted.TestCase.Name, func(t *testing.T) {
+		RunTracked(r.t, submitted.TestCase.Name, func(t *testing.T) {
 			t.Logf("Checking [%d/%d] %s", i+1, len(r.submitted), submitted.TestCase.Name)
 			if submitted.TestCase.ExpectSuccess {
 				r.assertSuccess(t, submitted)
@@ -154,7 +154,7 @@ func (r *ValidationTestRunner) assertSuccess(t *testing.T, submitted SubmittedVa
 	}
 	require.Equal(t, http.StatusOK, submitted.SubmitResp.StatusCode)
 
-	query, err := WaitForQueryCompletion(r.apiClient, r.ctx, submitted.QueryID, 10*time.Second)
+	query, err := WaitForQueryCompletionWithFlush(r.apiClient, r.ctx, submitted.QueryID, 10*time.Second) // Flushing, because it can succeed and generate results
 	require.NoError(t, err, "Query should complete within timeout")
 	require.Equal(t, apiclient.COMPLETED, query.GetStatus(), "Query should complete successfully")
 }
@@ -170,7 +170,7 @@ func (r *ValidationTestRunner) assertFailure(t *testing.T, submitted SubmittedVa
 		t.Fatalf("Unexpected submission error: %v", submitted.SubmitErr)
 	}
 
-	query, err := WaitForQueryCompletion(r.apiClient, r.ctx, submitted.QueryID, 10*time.Second)
+	query, err := WaitForQueryCompletionWithFlush(r.apiClient, r.ctx, submitted.QueryID, 10*time.Second) // Flushing, because it can succeed and generate results
 	require.NoError(t, err, "Query should complete within timeout")
 	require.Equal(t, apiclient.FAILED, query.GetStatus(), "Query should fail validation")
 
@@ -261,7 +261,7 @@ func (r *FunctionalTestRunner) submitQuery(tc FunctionalTestCase) SubmittedFunct
 func (r *FunctionalTestRunner) RunSync() {
 	for _, tc := range r.cases {
 		tc := tc
-		r.t.Run(tc.Name, func(t *testing.T) {
+		RunTracked(r.t, tc.Name, func(t *testing.T) {
 			submitted := r.submitQuery(tc)
 			r.assertResult(t, submitted)
 		})
@@ -289,7 +289,7 @@ func (r *FunctionalTestRunner) RunAsync() {
 	// Phase 2: Wait and verify all results
 	for i, submitted := range r.submitted {
 		submitted := submitted
-		r.t.Run(submitted.TestCase.Name, func(t *testing.T) {
+		RunTracked(r.t, submitted.TestCase.Name, func(t *testing.T) {
 			t.Logf("Checking [%d/%d] %s", i+1, len(r.submitted), submitted.TestCase.Name)
 			r.assertResult(t, submitted)
 		})

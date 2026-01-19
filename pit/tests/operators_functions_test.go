@@ -12,6 +12,7 @@ import (
 // ============================================================================
 
 func TestFunctional_ArithmeticOperators(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "types_test")
@@ -56,6 +57,7 @@ func TestFunctional_ArithmeticOperators(t *testing.T) {
 // ============================================================================
 
 func TestFunctional_UnaryMinus(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "types_test")
@@ -79,6 +81,7 @@ func TestFunctional_UnaryMinus(t *testing.T) {
 // ============================================================================
 
 func TestFunctional_ComparisonOperators(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "types_test")
@@ -128,6 +131,7 @@ func TestFunctional_ComparisonOperators(t *testing.T) {
 // ============================================================================
 
 func TestFunctional_LogicalOperators(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "types_test")
@@ -170,6 +174,7 @@ func TestFunctional_LogicalOperators(t *testing.T) {
 // ============================================================================
 
 func TestFunctional_StringFunctions(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "types_test")
@@ -210,6 +215,7 @@ func TestFunctional_StringFunctions(t *testing.T) {
 // ============================================================================
 
 func TestFunctional_WhereClause(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "types_test")
@@ -264,6 +270,7 @@ func TestFunctional_WhereClause(t *testing.T) {
 // ============================================================================
 
 func TestFunctional_OrderBy(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "types_test")
@@ -303,6 +310,7 @@ func TestFunctional_OrderBy(t *testing.T) {
 // ============================================================================
 
 func TestFunctional_Limit(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "types_test")
@@ -334,6 +342,7 @@ func TestFunctional_Limit(t *testing.T) {
 // ============================================================================
 
 func TestFunctional_Literals(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "types_test")
@@ -373,6 +382,7 @@ func TestFunctional_Literals(t *testing.T) {
 // ============================================================================
 
 func TestFunctional_ComplexQueries(t *testing.T) {
+	RequireInterfaceVersion(t, 2)
 	dbClient := pit.DbClient(BaseURL)
 	ctx := context.Background()
 	_ = SetupTestTable(t, dbClient, ctx, "types_test")
