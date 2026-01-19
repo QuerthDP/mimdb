@@ -68,6 +68,10 @@ pit-test: docker
 # Run CI checks
 ci: fmt check clippy test pit-test
 
+# Run mimsh
+mimsh:
+	cargo mimsh
+
 # Help target
 help:
 	@echo "MIMDB - Columnar Analytical Database"
@@ -87,4 +91,5 @@ help:
 	@echo "  clippy      - Run clippy"
 	@echo "  pit-test    - Run Go integration tests"
 	@echo "  ci          - Run CI checks"
+	@echo "  mimsh       - Run the mimsh interactive shell"
 	@echo "  help        - Show this help message"
