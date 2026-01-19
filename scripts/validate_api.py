@@ -308,7 +308,15 @@ class APIValidator:
 
             # Check status code
             if resp.status_code != expected_status:
-                self.log("FAIL", f"{method} {path}: expected {expected_status}, got {resp.status_code}")
+                error_msg = f"{method} {path}: expected {expected_status}, got {resp.status_code}"
+                if resp.text:
+                    try:
+                        error_data = resp.json()
+                        if "error" in error_data:
+                            error_msg += f" - {error_data['error']}"
+                    except:
+                        pass
+                self.log("FAIL", error_msg)
                 return False
 
             # Validate response schema
@@ -573,6 +581,41 @@ class APIValidator:
             }
         }
         self.validate_endpoint("POST", "/query", 200, json_data=select_strlen, description="- SELECT with STRLEN function")
+
+        # Test SELECT with CONCAT function
+        select_concat = {
+            "queryDefinition": {
+                "columnClauses": [
+                    {"tableName": "compliance_test", "columnName": "name"},
+                    {
+                        "functionName": "CONCAT",
+                        "arguments": [
+                            {"tableName": "compliance_test", "columnName": "name"},
+                            {"value": "_suffix"}
+                        ]
+                    }
+                ]
+            }
+        }
+        self.validate_endpoint("POST", "/query", 200, json_data=select_concat, description="- SELECT with CONCAT function")
+
+        # Test SELECT with REPLACE function
+        select_replace = {
+            "queryDefinition": {
+                "columnClauses": [
+                    {"tableName": "compliance_test", "columnName": "name"},
+                    {
+                        "functionName": "REPLACE",
+                        "arguments": [
+                            {"tableName": "compliance_test", "columnName": "name"},
+                            {"value": "Alice"},
+                            {"value": "ALICE"}
+                        ]
+                    }
+                ]
+            }
+        }
+        self.validate_endpoint("POST", "/query", 200, json_data=select_replace, description="- SELECT with REPLACE function")
 
         # Test SELECT with unary minus
         select_unary_minus = {

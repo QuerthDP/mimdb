@@ -128,14 +128,18 @@ func TestQueryValidation_Functions(t *testing.T) {
 
 	runner.AddSuccessCase("STRLEN_VARCHAR", "SELECT STRLEN(name) FROM people")
 	runner.AddSuccessCase("CONCAT_VARCHAR_VARCHAR", "SELECT CONCAT(name, surname) FROM people")
+	runner.AddSuccessCase("REPLACE_VARCHAR_VARCHAR_VARCHAR", "SELECT REPLACE(name, 'a', 'A') FROM people")
 	runner.AddSuccessCase("UPPER_VARCHAR", "SELECT UPPER(name) FROM people")
 	runner.AddSuccessCase("LOWER_VARCHAR", "SELECT LOWER(name) FROM people")
 	runner.AddSuccessCase("NestedFunctions", "SELECT STRLEN(CONCAT(name, surname)) FROM people")
+	runner.AddSuccessCase("NestedREPLACE", "SELECT STRLEN(REPLACE(name, 'a', 'aa')) FROM people")
 	runner.AddSuccessCase("FunctionInArithmetic", "SELECT STRLEN(name) + STRLEN(surname) FROM people")
 
 	runner.AddFailureCase("STRLEN_INT64", "SELECT STRLEN(age) FROM people", "type")
 	runner.AddFailureCase("CONCAT_VARCHAR_INT64", "SELECT CONCAT(name, age) FROM people", "type")
 	runner.AddFailureCase("CONCAT_INT64_VARCHAR", "SELECT CONCAT(age, name) FROM people", "type")
+	runner.AddFailureCase("REPLACE_VARCHAR_INT64_VARCHAR", "SELECT REPLACE(name, age, 'x') FROM people", "type")
+	runner.AddFailureCase("REPLACE_INT64_VARCHAR_VARCHAR", "SELECT REPLACE(age, 'x', 'y') FROM people", "type")
 	runner.AddFailureCase("UPPER_INT64", "SELECT UPPER(age) FROM people", "type")
 	runner.AddFailureCase("LOWER_INT64", "SELECT LOWER(age) FROM people", "type")
 	runner.AddFailureCase("InvalidNestedFunction", "SELECT STRLEN(STRLEN(name)) FROM people", "type")

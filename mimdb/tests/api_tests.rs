@@ -1718,3 +1718,292 @@ async fn test_select_with_where_and_limit_only() {
     // Should return 2 rows (first 2 "active" records)
     assert_eq!(result[0]["rowCount"], 2);
 }
+
+// ============================================================================
+// String Function Tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_select_with_replace_function() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "messages",
+        "columns": [
+            {"name": "id", "type": "INT64"},
+            {"name": "text", "type": "VARCHAR"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV
+    let csv_path = temp_dir.path().join("messages.csv");
+    std::fs::write(&csv_path, "1,hello world\n2,test data\n3,hello again\n").unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "messages",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with REPLACE function: REPLACE(text, 'hello', 'HELLO')
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {"tableName": "messages", "columnName": "id"},
+                {
+                    "functionName": "REPLACE",
+                    "arguments": [
+                        {"tableName": "messages", "columnName": "text"},
+                        {"value": "hello"},
+                        {"value": "HELLO"}
+                    ]
+                }
+            ]
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    assert_eq!(result[0]["rowCount"], 3);
+
+    // Verify the replacement occurred
+    let columns = result[0]["columns"].as_array().unwrap();
+    assert_eq!(columns.len(), 2);
+
+    // Second column should have replaced text
+    let replaced_col = &columns[1];
+    let values = replaced_col.as_array().unwrap();
+    assert_eq!(values[0], "HELLO world");
+    assert_eq!(values[1], "test data");
+    assert_eq!(values[2], "HELLO again");
+}
+
+#[tokio::test]
+async fn test_select_with_replace_all_occurrences() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "test_replace",
+        "columns": [
+            {"name": "text", "type": "VARCHAR"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV with repeated characters
+    let csv_path = temp_dir.path().join("test_replace.csv");
+    std::fs::write(&csv_path, "aaa\nbbb\naabbaa\n").unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "test_replace",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with REPLACE: 'a' -> 'aa' (exponential growth)
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {
+                    "functionName": "REPLACE",
+                    "arguments": [
+                        {"tableName": "test_replace", "columnName": "text"},
+                        {"value": "a"},
+                        {"value": "aa"}
+                    ]
+                }
+            ]
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    assert_eq!(result[0]["rowCount"], 3);
+
+    // Verify all 'a' characters were replaced
+    let columns = result[0]["columns"].as_array().unwrap();
+    let values = columns[0].as_array().unwrap();
+    assert_eq!(values[0], "aaaaaa"); // "aaa" -> "aaaaaa"
+    assert_eq!(values[1], "bbb"); // "bbb" unchanged
+    assert_eq!(values[2], "aaaabbaaaa"); // "aabbaa" -> "aaaabbaaaa"
+}
+
+#[tokio::test]
+async fn test_select_with_nested_replace() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "nested_test",
+        "columns": [
+            {"name": "text", "type": "VARCHAR"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV
+    let csv_path = temp_dir.path().join("nested_test.csv");
+    std::fs::write(&csv_path, "hello\n").unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "nested_test",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with nested REPLACE and STRLEN
+    // STRLEN(REPLACE(text, 'l', 'LL'))
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {
+                    "functionName": "STRLEN",
+                    "arguments": [
+                        {
+                            "functionName": "REPLACE",
+                            "arguments": [
+                                {"tableName": "nested_test", "columnName": "text"},
+                                {"value": "l"},
+                                {"value": "LL"}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    assert_eq!(result[0]["rowCount"], 1);
+
+    // Verify the length: "hello" -> "heLLLLo" (5 + 2 extra 'L's = 7)
+    let columns = result[0]["columns"].as_array().unwrap();
+    let values = columns[0].as_array().unwrap();
+    assert_eq!(values[0], 7);
+}
+
+#[tokio::test]
+async fn test_select_with_replace_no_match() {
+    let temp_dir = TempDir::new().unwrap();
+    let server = create_test_server(&temp_dir);
+
+    // Create table
+    let table_schema = serde_json::json!({
+        "name": "no_match",
+        "columns": [
+            {"name": "text", "type": "VARCHAR"}
+        ]
+    });
+
+    server.put("/table").json(&table_schema).await;
+
+    // Create CSV
+    let csv_path = temp_dir.path().join("no_match.csv");
+    std::fs::write(&csv_path, "hello\nworld\n").unwrap();
+
+    // COPY data
+    let copy_query = serde_json::json!({
+        "queryDefinition": {
+            "sourceFilepath": csv_path.to_str().unwrap(),
+            "destinationTableName": "no_match",
+            "doesCsvContainHeader": false
+        }
+    });
+
+    let resp = server.post("/query").json(&copy_query).await;
+    let copy_query_id: String = resp.json();
+    wait_for_query_completion(&server, &copy_query_id).await;
+
+    // SELECT with REPLACE that doesn't match anything
+    let select_query = serde_json::json!({
+        "queryDefinition": {
+            "columnClauses": [
+                {
+                    "functionName": "REPLACE",
+                    "arguments": [
+                        {"tableName": "no_match", "columnName": "text"},
+                        {"value": "xyz"},
+                        {"value": "ABC"}
+                    ]
+                }
+            ]
+        }
+    });
+
+    let resp = server.post("/query").json(&select_query).await;
+    resp.assert_status_success();
+
+    let select_query_id: String = resp.json();
+    wait_for_query_completion(&server, &select_query_id).await;
+
+    let resp = server.get(&format!("/result/{}", select_query_id)).await;
+    resp.assert_status_success();
+
+    let result: serde_json::Value = resp.json();
+    assert!(result.is_array());
+    assert_eq!(result[0]["rowCount"], 2);
+
+    // Verify text is unchanged when no match
+    let columns = result[0]["columns"].as_array().unwrap();
+    let values = columns[0].as_array().unwrap();
+    assert_eq!(values[0], "hello");
+    assert_eq!(values[1], "world");
+}

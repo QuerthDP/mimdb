@@ -24,7 +24,7 @@ cargo run --bin cli -- --host localhost --port 3000
 - `select <cols> from <table> [where <expr>] [order by <col> [asc|desc], ...] [limit <n>]` — Execute SELECT
 - `raw <json>` — Submit raw JSON query per OpenAPI
 
-Supported expressions: arithmetic `+ - * /`, comparison `= != < <= > >=`, logical `AND OR`, functions `upper(x) lower(x) strlen(x) concat(a,b)`, literals (`123`, `"text"`, `true/false`).
+Supported expressions: arithmetic `+ - * /`, comparison `= != < <= > >=`, logical `AND OR`, functions `upper(x) lower(x) strlen(x) concat(a,b) replace(s,old,new)`, literals (`123`, `"text"`, `true/false`).
 
 ## Server
 

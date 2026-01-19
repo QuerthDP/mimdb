@@ -428,7 +428,7 @@ See the [examples README](examples/README.md) for detailed information about eac
 MIMDB implements an extended SELECT query language per `api/dbmsInterface.yaml`:
 
 - **Column Expressions**: column references, literals, functions, binary and unary operators
-- **Functions**: `STRLEN`, `CONCAT`, `UPPER`, `LOWER`
+- **Functions**: `STRLEN`, `CONCAT`, `REPLACE`, `UPPER`, `LOWER`
 - **Binary Operators**: `ADD`, `SUBTRACT`, `MULTIPLY`, `DIVIDE`, `AND`, `OR`, `EQUAL`, `NOT_EQUAL`, `LESS_THAN`, `LESS_EQUAL`, `GREATER_THAN`, `GREATER_EQUAL`
 - **Unary Operators**: `NOT`, `MINUS`
 - **WHERE**: filtering requires boolean-evaluating expressions

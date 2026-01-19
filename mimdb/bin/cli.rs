@@ -479,12 +479,14 @@ fn build_column_expression(table: &str, expr: &str) -> serde_json::Value {
     }
 
     // Check for function calls: name(args)
-    // Supported: upper, lower, strlen, concat
+    // Supported: upper, lower, strlen, concat, replace
     // Only parse as function if the entire expression is a function call
     if let Some(paren_pos) = expr.find('(') {
         let func_name = expr[..paren_pos].trim().to_uppercase();
-        if matches!(func_name.as_str(), "UPPER" | "LOWER" | "STRLEN" | "CONCAT")
-            && let Some(close_pos) = find_matching_paren(expr, paren_pos)
+        if matches!(
+            func_name.as_str(),
+            "UPPER" | "LOWER" | "STRLEN" | "CONCAT" | "REPLACE"
+        ) && let Some(close_pos) = find_matching_paren(expr, paren_pos)
             && close_pos == expr.len() - 1
         {
             let args_str = &expr[paren_pos + 1..close_pos];
@@ -510,10 +512,10 @@ fn build_column_expression(table: &str, expr: &str) -> serde_json::Value {
     if expr == "false" {
         return serde_json::json!({ "value": false });
     }
-    if expr.starts_with('"') && expr.ends_with('"') {
+    if expr.starts_with('"') && expr.ends_with('"') && expr.len() >= 2 {
         return serde_json::json!({ "value": &expr[1..expr.len()-1] });
     }
-    if expr.starts_with('\'') && expr.ends_with('\'') {
+    if expr.starts_with('\'') && expr.ends_with('\'') && expr.len() >= 2 {
         return serde_json::json!({ "value": &expr[1..expr.len()-1] });
     }
 
@@ -627,10 +629,10 @@ fn handle_select(client: &MimdbClient, args: &[&str]) {
             }
         }
     } else {
-        // Split by comma to get individual column expressions
-        columns_str
-            .split(',')
-            .map(|s| s.trim().to_string())
+        // Split by comma respecting parentheses and strings (same logic as function args)
+        split_function_args(&columns_str)
+            .iter()
+            .map(|s| s.to_string())
             .collect()
     };
 

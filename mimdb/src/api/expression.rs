@@ -147,6 +147,31 @@ impl ExpressionEvaluator {
                     _ => anyhow::bail!("CONCAT expects VARCHAR arguments"),
                 }
             }
+            FunctionName::Replace => {
+                if func.arguments.len() != 3 {
+                    anyhow::bail!("REPLACE expects exactly 3 arguments");
+                }
+                let source = Self::evaluate(&func.arguments[0], ctx)?;
+                let old = Self::evaluate(&func.arguments[1], ctx)?;
+                let new = Self::evaluate(&func.arguments[2], ctx)?;
+                match (source, old, new) {
+                    (
+                        ColumnData::Varchar(v_source),
+                        ColumnData::Varchar(v_old),
+                        ColumnData::Varchar(v_new),
+                    ) => Ok(ColumnData::Varchar(
+                        v_source
+                            .iter()
+                            .zip(v_old.iter())
+                            .zip(v_new.iter())
+                            .map(|((source_str, old_str), new_str)| {
+                                source_str.replace(old_str, new_str)
+                            })
+                            .collect(),
+                    )),
+                    _ => anyhow::bail!("REPLACE expects VARCHAR arguments"),
+                }
+            }
             FunctionName::Upper => {
                 if func.arguments.len() != 1 {
                     anyhow::bail!("UPPER expects exactly 1 argument");
@@ -348,9 +373,10 @@ impl ExpressionEvaluator {
             }
             ColumnExpression::Function(func) => match func.function_name {
                 FunctionName::Strlen => Ok(ColumnType::Int64),
-                FunctionName::Concat | FunctionName::Upper | FunctionName::Lower => {
-                    Ok(ColumnType::Varchar)
-                }
+                FunctionName::Concat
+                | FunctionName::Replace
+                | FunctionName::Upper
+                | FunctionName::Lower => Ok(ColumnType::Varchar),
             },
             ColumnExpression::BinaryOperation(bin_op) => match bin_op.operator {
                 BinaryOperator::Add
@@ -664,6 +690,34 @@ mod tests {
         });
         match ExpressionEvaluator::evaluate(&lower, &ctx).unwrap() {
             ColumnData::Varchar(v) => assert_eq!(v[0], "hello"),
+            _ => panic!("Expected Varchar"),
+        }
+
+        // REPLACE("hello world", "world", "Rust") = "hello Rust"
+        let replace = ColumnExpression::Function(Function {
+            function_name: FunctionName::Replace,
+            arguments: vec![
+                make_literal_str("hello world"),
+                make_literal_str("world"),
+                make_literal_str("Rust"),
+            ],
+        });
+        match ExpressionEvaluator::evaluate(&replace, &ctx).unwrap() {
+            ColumnData::Varchar(v) => assert_eq!(v[0], "hello Rust"),
+            _ => panic!("Expected Varchar"),
+        }
+
+        // REPLACE("aaa", "a", "aa") = "aaaaaa" (exponential growth)
+        let replace_exp = ColumnExpression::Function(Function {
+            function_name: FunctionName::Replace,
+            arguments: vec![
+                make_literal_str("aaa"),
+                make_literal_str("a"),
+                make_literal_str("aa"),
+            ],
+        });
+        match ExpressionEvaluator::evaluate(&replace_exp, &ctx).unwrap() {
+            ColumnData::Varchar(v) => assert_eq!(v[0], "aaaaaa"),
             _ => panic!("Expected Varchar"),
         }
     }

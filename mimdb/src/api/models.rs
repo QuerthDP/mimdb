@@ -166,6 +166,7 @@ pub enum LiteralValue {
 pub enum FunctionName {
     Strlen,
     Concat,
+    Replace,
     Upper,
     Lower,
 }
