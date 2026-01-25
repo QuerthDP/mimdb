@@ -46,11 +46,20 @@ use anyhow::Context;
 use anyhow::Result;
 use parking_lot::RwLock;
 use rayon::prelude::*;
+use std::cmp::Ordering;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::BufReader;
+use std::io::BufWriter;
+use std::io::Read;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tempfile::TempDir;
 use uuid::Uuid;
 
 /// Plan for a COPY query
@@ -267,6 +276,205 @@ fn extract_single_table_reference(
             "Ambiguous column references: multiple tables ({:?}) contain the referenced columns. Please specify table names explicitly.",
             matching_tables
         ),
+    }
+}
+
+/// Maximum number of rows allowed in result set without LIMIT clause
+/// This protects against OOM when querying large tables
+/// For larger result sets, users must use LIMIT clause or ORDER BY (which uses external sort)
+const MAX_RESULT_ROWS_WITHOUT_LIMIT: usize = 10_000;
+
+/// Configuration for External Merge Sort
+/// Controls memory usage and performance trade-offs
+const EXTERNAL_SORT_MAX_RUNS_PER_MERGE: usize = 16; // Max files to merge at once
+const EXTERNAL_SORT_THRESHOLD_BYTES: u64 = 100 * 1024 * 1024; // 100MB - use external sort above this
+
+/// Value types for sort keys
+#[derive(Clone, PartialEq, Eq)]
+enum SortKeyValue {
+    Int64(i64),
+    Varchar(String),
+    Bool(bool),
+}
+
+impl SortKeyValue {
+    fn cmp_with_direction(&self, other: &Self, ascending: bool) -> Ordering {
+        let base_cmp = match (self, other) {
+            (SortKeyValue::Int64(a), SortKeyValue::Int64(b)) => a.cmp(b),
+            (SortKeyValue::Varchar(a), SortKeyValue::Varchar(b)) => a.cmp(b),
+            (SortKeyValue::Bool(a), SortKeyValue::Bool(b)) => a.cmp(b),
+            _ => Ordering::Equal, // Type mismatch - shouldn't happen
+        };
+        if ascending {
+            base_cmp
+        } else {
+            base_cmp.reverse()
+        }
+    }
+}
+
+/// Metadata for a sorted chunk file
+struct SortedChunkFile {
+    path: PathBuf,
+    row_count: usize,
+}
+
+/// Reader for sorted chunk files during k-way merge
+struct ChunkReader {
+    reader: BufReader<File>,
+    remaining_rows: usize,
+    column_types: Vec<u8>,
+    order_by_columns: Vec<(usize, bool)>,
+}
+
+/// A row read from a chunk file for merging
+struct ChunkRow {
+    values: Vec<ColumnValue>,
+    sort_keys: Vec<SortKeyValue>,
+}
+
+/// Value from a column in a chunk row
+#[derive(Clone)]
+enum ColumnValue {
+    Int64(i64),
+    Varchar(String),
+    Bool(bool),
+}
+
+impl ChunkReader {
+    fn open(path: &PathBuf) -> Result<Self> {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+
+        let mut buf8 = [0u8; 8];
+        let mut buf4 = [0u8; 4];
+
+        // Read header
+        reader.read_exact(&mut buf8)?;
+        let row_count = u64::from_le_bytes(buf8) as usize;
+
+        reader.read_exact(&mut buf4)?;
+        let column_count = u32::from_le_bytes(buf4) as usize;
+
+        // Read column types
+        let mut column_types = Vec::with_capacity(column_count);
+        for _ in 0..column_count {
+            let mut type_buf = [0u8; 1];
+            reader.read_exact(&mut type_buf)?;
+            column_types.push(type_buf[0]);
+        }
+
+        // Read ORDER BY info
+        reader.read_exact(&mut buf4)?;
+        let order_by_count = u32::from_le_bytes(buf4) as usize;
+        let mut order_by_columns = Vec::with_capacity(order_by_count);
+        for _ in 0..order_by_count {
+            reader.read_exact(&mut buf4)?;
+            let col_idx = u32::from_le_bytes(buf4) as usize;
+            let mut asc_buf = [0u8; 1];
+            reader.read_exact(&mut asc_buf)?;
+            order_by_columns.push((col_idx, asc_buf[0] != 0));
+        }
+
+        Ok(Self {
+            reader,
+            remaining_rows: row_count,
+            column_types,
+            order_by_columns,
+        })
+    }
+
+    fn read_next(&mut self) -> Result<Option<ChunkRow>> {
+        if self.remaining_rows == 0 {
+            return Ok(None);
+        }
+
+        let mut buf8 = [0u8; 8];
+        let mut buf4 = [0u8; 4];
+
+        let mut values = Vec::with_capacity(self.column_types.len());
+
+        for &col_type in &self.column_types {
+            let value = match col_type {
+                0 => {
+                    self.reader.read_exact(&mut buf8)?;
+                    ColumnValue::Int64(i64::from_le_bytes(buf8))
+                }
+                1 => {
+                    self.reader.read_exact(&mut buf4)?;
+                    let len = u32::from_le_bytes(buf4) as usize;
+                    let mut str_buf = vec![0u8; len];
+                    self.reader.read_exact(&mut str_buf)?;
+                    ColumnValue::Varchar(String::from_utf8(str_buf)?)
+                }
+                2 => {
+                    let mut bool_buf = [0u8; 1];
+                    self.reader.read_exact(&mut bool_buf)?;
+                    ColumnValue::Bool(bool_buf[0] != 0)
+                }
+                _ => anyhow::bail!("Unknown column type"),
+            };
+            values.push(value);
+        }
+
+        // Extract sort keys
+        let sort_keys: Vec<SortKeyValue> = self
+            .order_by_columns
+            .iter()
+            .map(|&(col_idx, _)| match &values[col_idx] {
+                ColumnValue::Int64(v) => SortKeyValue::Int64(*v),
+                ColumnValue::Varchar(v) => SortKeyValue::Varchar(v.clone()),
+                ColumnValue::Bool(v) => SortKeyValue::Bool(*v),
+            })
+            .collect();
+
+        self.remaining_rows -= 1;
+
+        Ok(Some(ChunkRow { values, sort_keys }))
+    }
+
+    fn order_directions(&self) -> Vec<bool> {
+        self.order_by_columns.iter().map(|&(_, asc)| asc).collect()
+    }
+}
+
+/// Heap entry for merging chunk files
+struct ChunkHeapEntry {
+    row: ChunkRow,
+    chunk_index: usize,
+    order_directions: Vec<bool>,
+}
+
+impl PartialEq for ChunkHeapEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for ChunkHeapEntry {}
+
+impl PartialOrd for ChunkHeapEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for ChunkHeapEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        for (i, (self_key, other_key)) in self
+            .row
+            .sort_keys
+            .iter()
+            .zip(&other.row.sort_keys)
+            .enumerate()
+        {
+            let ascending = self.order_directions.get(i).copied().unwrap_or(true);
+            let cmp = self_key.cmp_with_direction(other_key, ascending);
+            if cmp != Ordering::Equal {
+                return cmp;
+            }
+        }
+        Ordering::Equal
     }
 }
 
@@ -717,13 +925,22 @@ impl QueryExecutor {
     ///    (Reader → Input Projection → Filter → Output Projection)
     /// 2. Sequential phase: Results are merged, sorted, and limited
     ///    (Merge → Sort → Limit → Output)
+    ///
+    /// For large datasets with ORDER BY, uses external merge sort:
+    /// - Each worker writes its sorted chunk to a temp file
+    /// - Chunks are merged using k-way merge from disk
     fn execute_select_plan(plan: &SelectPlan) -> Result<QueryResult> {
         if plan.data_files.is_empty() {
             return Ok(vec![]);
         }
 
+        // Check if result set might be too large for in-memory processing
+        // We estimate based on table row count from metastore
+        let has_limit = plan.limit_clause.is_some();
+        let has_order_by = plan.order_by_clause.is_some();
+
         // Determine if we can apply early limit (only when no sorting)
-        let early_limit = if plan.order_by_clause.is_none() {
+        let early_limit = if !has_order_by {
             plan.limit_clause.as_ref().map(|l| l.limit as usize)
         } else {
             None
@@ -734,20 +951,57 @@ impl QueryExecutor {
         let required_columns = plan.required_columns.clone();
         let num_output_columns = plan.column_clauses.len();
 
-        // Process each data file through the pipeline
+        // For large datasets with ORDER BY, use external merge sort
+        // This avoids loading all data into memory at once
+        // Estimate total data size from file sizes
+        let total_file_size: u64 = plan
+            .data_files
+            .iter()
+            .filter_map(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len())
+            .sum();
+
+        if has_order_by && total_file_size > EXTERNAL_SORT_THRESHOLD_BYTES {
+            return Self::execute_select_with_external_sort(
+                plan,
+                &pipeline_ctx,
+                &required_columns,
+                num_output_columns,
+            );
+        }
+
+        // For queries without LIMIT and without ORDER BY, process sequentially
+        // to detect large result sets early and avoid OOM
+        if !has_limit && !has_order_by {
+            return Self::execute_select_with_row_limit_check(
+                plan,
+                &pipeline_ctx,
+                &required_columns,
+                num_output_columns,
+            );
+        }
+
+        // For queries with LIMIT or ORDER BY,
+        // we can safely use parallel processing
         let worker_results = plan
             .data_files
             .par_iter()
             .map(|file_path| Self::process_data_file(file_path, &required_columns, &pipeline_ctx))
             .collect::<Result<Vec<_>>>()?;
 
-        // Combine results from all workers
-        let merged_columns = Self::merge_worker_results(worker_results, num_output_columns);
-        let total_row_count = merged_columns.first().map(|c| c.len()).unwrap_or(0);
+        // Count total rows
+        let total_row_count: usize = worker_results
+            .iter()
+            .filter_map(|r| r.as_ref())
+            .map(|cols| cols.first().map(|c| c.len()).unwrap_or(0))
+            .sum();
 
         if total_row_count == 0 {
             return Ok(vec![]);
         }
+
+        // Merge results
+        let merged_columns = Self::merge_worker_results(worker_results, num_output_columns);
 
         // Order results if needed
         let ordered_indices = if let Some(ref order_by) = plan.order_by_clause {
@@ -779,6 +1033,531 @@ impl QueryExecutor {
         Ok(vec![QueryResultItem {
             row_count: final_indices.len() as i32,
             columns: final_columns,
+        }])
+    }
+
+    /// Execute SELECT with sequential processing and early termination for large result sets
+    ///
+    /// This is used for queries without LIMIT and without ORDER BY to prevent OOM.
+    /// Processes files sequentially and bails out early if result set exceeds limit.
+    fn execute_select_with_row_limit_check(
+        plan: &SelectPlan,
+        pipeline_ctx: &PipelineContext,
+        required_columns: &[ColumnMetadata],
+        num_output_columns: usize,
+    ) -> Result<QueryResult> {
+        let mut accumulated_columns: Option<Vec<ColumnData>> = None;
+        let mut total_rows = 0usize;
+
+        // Process files sequentially to enable early termination
+        for file_path in &plan.data_files {
+            let worker_result = Self::process_data_file(file_path, required_columns, pipeline_ctx)?;
+
+            if let Some(columns) = worker_result {
+                let row_count = columns.first().map(|c| c.len()).unwrap_or(0);
+                if row_count == 0 {
+                    continue;
+                }
+
+                total_rows += row_count;
+
+                // Check limit BEFORE accumulating more data
+                if total_rows > MAX_RESULT_ROWS_WITHOUT_LIMIT {
+                    anyhow::bail!(
+                        "Result set too large: {} rows exceeds maximum of {} rows. \
+                        Please use LIMIT clause to reduce result size, or use ORDER BY \
+                        which enables external merge sort for large datasets.",
+                        total_rows,
+                        MAX_RESULT_ROWS_WITHOUT_LIMIT
+                    );
+                }
+
+                // Accumulate results
+                match &mut accumulated_columns {
+                    None => {
+                        accumulated_columns = Some(columns);
+                    }
+                    Some(acc) => {
+                        for (i, col) in columns.into_iter().enumerate() {
+                            Self::extend_column_data(&mut acc[i], col);
+                        }
+                    }
+                }
+            }
+        }
+
+        if total_rows == 0 {
+            return Ok(vec![]);
+        }
+
+        let merged_columns = accumulated_columns
+            .unwrap_or_else(|| vec![ColumnData::Int64(Vec::new()); num_output_columns]);
+
+        // Build final result (no sorting needed for this path)
+        let final_columns: Vec<ResultColumn> = merged_columns
+            .into_iter()
+            .map(Self::column_data_to_result_column)
+            .collect();
+
+        Ok(vec![QueryResultItem {
+            row_count: total_rows as i32,
+            columns: final_columns,
+        }])
+    }
+
+    /// Convert ColumnData to ResultColumn without reordering
+    fn column_data_to_result_column(data: ColumnData) -> ResultColumn {
+        match data {
+            ColumnData::Int64(vec) => ResultColumn::Int64(vec),
+            ColumnData::Varchar(vec) => ResultColumn::Varchar(vec),
+            ColumnData::Bool(vec) => ResultColumn::Bool(vec),
+        }
+    }
+
+    /// Execute SELECT with external merge sort for large datasets
+    ///
+    /// This method:
+    /// 1. Processes each data file, sorts the results, and writes to temp file
+    /// 2. Merges all sorted temp files using k-way merge
+    /// 3. Streams the result without loading everything into memory
+    fn execute_select_with_external_sort(
+        plan: &SelectPlan,
+        pipeline_ctx: &PipelineContext,
+        required_columns: &[ColumnMetadata],
+        num_output_columns: usize,
+    ) -> Result<QueryResult> {
+        let order_by = plan.order_by_clause.as_ref().unwrap();
+        let limit = plan.limit_clause.as_ref().map(|l| l.limit as usize);
+
+        // Create temp directory for sorted chunks
+        let temp_dir = TempDir::new().context("Failed to create temp directory")?;
+
+        // Process each data file and write sorted chunk to disk
+        // Using sequential processing to limit memory usage
+        let mut chunk_files: Vec<SortedChunkFile> = Vec::new();
+        let mut total_rows = 0usize;
+
+        for (chunk_idx, file_path) in plan.data_files.iter().enumerate() {
+            let worker_result = Self::process_data_file(file_path, required_columns, pipeline_ctx)?;
+
+            if let Some(columns) = worker_result {
+                let row_count = columns.first().map(|c| c.len()).unwrap_or(0);
+                if row_count == 0 {
+                    continue;
+                }
+
+                total_rows += row_count;
+
+                // Sort this chunk in memory
+                let sorted_indices = Self::compute_sort_order(&columns, order_by, row_count)?;
+
+                // Write sorted chunk to temp file
+                let chunk_path = temp_dir.path().join(format!("chunk_{}.bin", chunk_idx));
+                Self::write_sorted_chunk(&chunk_path, &columns, &sorted_indices, order_by)?;
+
+                chunk_files.push(SortedChunkFile {
+                    path: chunk_path,
+                    row_count,
+                });
+            }
+        }
+
+        if chunk_files.is_empty() || total_rows == 0 {
+            return Ok(vec![]);
+        }
+
+        // Check result size limit BEFORE doing any merge work
+        // If no LIMIT and total rows exceed threshold, bail out early
+        if limit.is_none() && total_rows > MAX_RESULT_ROWS_WITHOUT_LIMIT {
+            anyhow::bail!(
+                "Result set too large: {} rows exceeds maximum of {} rows. \
+                Please use LIMIT clause to reduce result size.",
+                total_rows,
+                MAX_RESULT_ROWS_WITHOUT_LIMIT
+            );
+        }
+
+        // If only one chunk, read it directly
+        if chunk_files.len() == 1 {
+            let result =
+                Self::read_chunk_as_result(&chunk_files[0].path, num_output_columns, limit)?;
+            return Ok(result);
+        }
+
+        // Multi-level merge if too many chunks
+        let merged_chunks = Self::merge_chunks_multi_level(chunk_files, &temp_dir, order_by)?;
+
+        // Final merge to produce result
+        let result =
+            Self::merge_chunks_to_result(&merged_chunks, num_output_columns, limit, order_by)?;
+
+        Ok(result)
+    }
+
+    /// Write a sorted chunk of column data to a temp file
+    fn write_sorted_chunk(
+        path: &PathBuf,
+        columns: &[ColumnData],
+        sorted_indices: &[usize],
+        order_by: &[OrderByExpression],
+    ) -> Result<()> {
+        let file = File::create(path).context("Failed to create chunk file")?;
+        let mut writer = BufWriter::new(file);
+
+        let row_count = sorted_indices.len();
+
+        // Write header: row_count, column_count
+        writer.write_all(&(row_count as u64).to_le_bytes())?;
+        writer.write_all(&(columns.len() as u32).to_le_bytes())?;
+
+        // Write column types
+        for col in columns {
+            let type_tag: u8 = match col {
+                ColumnData::Int64(_) => 0,
+                ColumnData::Varchar(_) => 1,
+                ColumnData::Bool(_) => 2,
+            };
+            writer.write_all(&[type_tag])?;
+        }
+
+        // Write ORDER BY column indices for sort key extraction during merge
+        writer.write_all(&(order_by.len() as u32).to_le_bytes())?;
+        for o in order_by {
+            writer.write_all(&(o.column_index as u32).to_le_bytes())?;
+            writer.write_all(&[if o.ascending { 1u8 } else { 0u8 }])?;
+        }
+
+        // Write rows in sorted order
+        for &row_idx in sorted_indices {
+            for col in columns {
+                Self::write_column_value(&mut writer, col, row_idx)?;
+            }
+        }
+
+        writer.flush()?;
+        Ok(())
+    }
+
+    /// Write a single column value to the writer
+    fn write_column_value<W: Write>(
+        writer: &mut W,
+        col: &ColumnData,
+        row_idx: usize,
+    ) -> Result<()> {
+        match col {
+            ColumnData::Int64(vec) => {
+                writer.write_all(&vec[row_idx].to_le_bytes())?;
+            }
+            ColumnData::Varchar(vec) => {
+                let bytes = vec[row_idx].as_bytes();
+                writer.write_all(&(bytes.len() as u32).to_le_bytes())?;
+                writer.write_all(bytes)?;
+            }
+            ColumnData::Bool(vec) => {
+                writer.write_all(&[if vec[row_idx] { 1u8 } else { 0u8 }])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Read a chunk file directly as a query result (for single-chunk case)
+    fn read_chunk_as_result(
+        path: &PathBuf,
+        _num_columns: usize,
+        limit: Option<usize>,
+    ) -> Result<QueryResult> {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+
+        // Read header
+        let mut buf8 = [0u8; 8];
+        let mut buf4 = [0u8; 4];
+
+        reader.read_exact(&mut buf8)?;
+        let row_count = u64::from_le_bytes(buf8) as usize;
+
+        reader.read_exact(&mut buf4)?;
+        let column_count = u32::from_le_bytes(buf4) as usize;
+
+        // Read column types
+        let mut column_types = Vec::with_capacity(column_count);
+        for _ in 0..column_count {
+            let mut type_buf = [0u8; 1];
+            reader.read_exact(&mut type_buf)?;
+            column_types.push(type_buf[0]);
+        }
+
+        // Skip ORDER BY info
+        reader.read_exact(&mut buf4)?;
+        let order_by_count = u32::from_le_bytes(buf4) as usize;
+        for _ in 0..order_by_count {
+            reader.read_exact(&mut buf4)?; // column_index
+            let mut _asc = [0u8; 1];
+            reader.read_exact(&mut _asc)?;
+        }
+
+        // Initialize result columns
+        let mut result_columns: Vec<ResultColumn> = column_types
+            .iter()
+            .map(|&t| match t {
+                0 => ResultColumn::Int64(Vec::new()),
+                1 => ResultColumn::Varchar(Vec::new()),
+                2 => ResultColumn::Bool(Vec::new()),
+                _ => ResultColumn::Int64(Vec::new()),
+            })
+            .collect();
+
+        // Read rows up to limit
+        let rows_to_read = limit.map(|l| l.min(row_count)).unwrap_or(row_count);
+
+        for _ in 0..rows_to_read {
+            for (col_idx, &col_type) in column_types.iter().enumerate() {
+                match col_type {
+                    0 => {
+                        reader.read_exact(&mut buf8)?;
+                        if let ResultColumn::Int64(ref mut v) = result_columns[col_idx] {
+                            v.push(i64::from_le_bytes(buf8));
+                        }
+                    }
+                    1 => {
+                        reader.read_exact(&mut buf4)?;
+                        let len = u32::from_le_bytes(buf4) as usize;
+                        let mut str_buf = vec![0u8; len];
+                        reader.read_exact(&mut str_buf)?;
+                        if let ResultColumn::Varchar(ref mut v) = result_columns[col_idx] {
+                            v.push(String::from_utf8(str_buf)?);
+                        }
+                    }
+                    2 => {
+                        let mut bool_buf = [0u8; 1];
+                        reader.read_exact(&mut bool_buf)?;
+                        if let ResultColumn::Bool(ref mut v) = result_columns[col_idx] {
+                            v.push(bool_buf[0] != 0);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(vec![QueryResultItem {
+            row_count: rows_to_read as i32,
+            columns: result_columns,
+        }])
+    }
+
+    fn merge_chunks_multi_level(
+        mut chunks: Vec<SortedChunkFile>,
+        temp_dir: &TempDir,
+        order_by: &[OrderByExpression],
+    ) -> Result<Vec<SortedChunkFile>> {
+        let mut level = 0;
+
+        while chunks.len() > EXTERNAL_SORT_MAX_RUNS_PER_MERGE {
+            let mut new_chunks = Vec::new();
+
+            for (group_idx, chunk_group) in
+                chunks.chunks(EXTERNAL_SORT_MAX_RUNS_PER_MERGE).enumerate()
+            {
+                if chunk_group.len() == 1 {
+                    new_chunks.push(SortedChunkFile {
+                        path: chunk_group[0].path.clone(),
+                        row_count: chunk_group[0].row_count,
+                    });
+                } else {
+                    let merged_path = temp_dir
+                        .path()
+                        .join(format!("merged_L{}_G{}.bin", level, group_idx));
+                    let merged_row_count =
+                        Self::merge_chunks_to_file(chunk_group, &merged_path, order_by)?;
+                    new_chunks.push(SortedChunkFile {
+                        path: merged_path,
+                        row_count: merged_row_count,
+                    });
+                }
+            }
+
+            chunks = new_chunks;
+            level += 1;
+        }
+
+        Ok(chunks)
+    }
+
+    /// Merge a group of chunk files into a single output file
+    fn merge_chunks_to_file(
+        chunks: &[SortedChunkFile],
+        output_path: &PathBuf,
+        order_by: &[OrderByExpression],
+    ) -> Result<usize> {
+        // Open all chunk readers
+        let mut readers: Vec<ChunkReader> = chunks
+            .iter()
+            .map(|c| ChunkReader::open(&c.path))
+            .collect::<Result<Vec<_>>>()?;
+
+        if readers.is_empty() {
+            return Ok(0);
+        }
+
+        let column_types = readers[0].column_types.clone();
+        let order_directions = readers[0].order_directions();
+
+        // Initialize min-heap
+        let mut heap: BinaryHeap<Reverse<ChunkHeapEntry>> = BinaryHeap::new();
+
+        for (chunk_idx, reader) in readers.iter_mut().enumerate() {
+            if let Some(row) = reader.read_next()? {
+                heap.push(Reverse(ChunkHeapEntry {
+                    row,
+                    chunk_index: chunk_idx,
+                    order_directions: order_directions.clone(),
+                }));
+            }
+        }
+
+        // Create output file
+        let file = File::create(output_path)?;
+        let mut writer = BufWriter::new(file);
+
+        let total_rows: usize = chunks.iter().map(|c| c.row_count).sum();
+
+        // Write header
+        writer.write_all(&(total_rows as u64).to_le_bytes())?;
+        writer.write_all(&(column_types.len() as u32).to_le_bytes())?;
+
+        for &t in &column_types {
+            writer.write_all(&[t])?;
+        }
+
+        // Write ORDER BY info
+        writer.write_all(&(order_by.len() as u32).to_le_bytes())?;
+        for o in order_by {
+            writer.write_all(&(o.column_index as u32).to_le_bytes())?;
+            writer.write_all(&[if o.ascending { 1u8 } else { 0u8 }])?;
+        }
+
+        // K-way merge
+        let mut written_rows = 0usize;
+
+        while let Some(Reverse(entry)) = heap.pop() {
+            // Write row values
+            for value in &entry.row.values {
+                match value {
+                    ColumnValue::Int64(v) => writer.write_all(&v.to_le_bytes())?,
+                    ColumnValue::Varchar(v) => {
+                        let bytes = v.as_bytes();
+                        writer.write_all(&(bytes.len() as u32).to_le_bytes())?;
+                        writer.write_all(bytes)?;
+                    }
+                    ColumnValue::Bool(v) => writer.write_all(&[if *v { 1u8 } else { 0u8 }])?,
+                }
+            }
+            written_rows += 1;
+
+            // Read next row from same chunk
+            if let Some(next_row) = readers[entry.chunk_index].read_next()? {
+                heap.push(Reverse(ChunkHeapEntry {
+                    row: next_row,
+                    chunk_index: entry.chunk_index,
+                    order_directions: order_directions.clone(),
+                }));
+            }
+        }
+
+        writer.flush()?;
+        Ok(written_rows)
+    }
+
+    /// Final merge: merge chunks directly to query result
+    fn merge_chunks_to_result(
+        chunks: &[SortedChunkFile],
+        _num_columns: usize,
+        limit: Option<usize>,
+        _order_by: &[OrderByExpression],
+    ) -> Result<QueryResult> {
+        // Open all chunk readers
+        let mut readers: Vec<ChunkReader> = chunks
+            .iter()
+            .map(|c| ChunkReader::open(&c.path))
+            .collect::<Result<Vec<_>>>()?;
+
+        if readers.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let column_types = readers[0].column_types.clone();
+        let order_directions = readers[0].order_directions();
+        let total_rows: usize = chunks.iter().map(|c| c.row_count).sum();
+        let max_rows = limit.unwrap_or(total_rows);
+
+        // Initialize result columns
+        let mut result_columns: Vec<ResultColumn> = column_types
+            .iter()
+            .map(|&t| match t {
+                0 => ResultColumn::Int64(Vec::with_capacity(max_rows.min(total_rows))),
+                1 => ResultColumn::Varchar(Vec::with_capacity(max_rows.min(total_rows))),
+                2 => ResultColumn::Bool(Vec::with_capacity(max_rows.min(total_rows))),
+                _ => ResultColumn::Int64(Vec::new()),
+            })
+            .collect();
+
+        // Initialize min-heap
+        let mut heap: BinaryHeap<Reverse<ChunkHeapEntry>> = BinaryHeap::new();
+
+        for (chunk_idx, reader) in readers.iter_mut().enumerate() {
+            if let Some(row) = reader.read_next()? {
+                heap.push(Reverse(ChunkHeapEntry {
+                    row,
+                    chunk_index: chunk_idx,
+                    order_directions: order_directions.clone(),
+                }));
+            }
+        }
+
+        // K-way merge with limit
+        let mut collected_rows = 0usize;
+
+        while let Some(Reverse(entry)) = heap.pop() {
+            if collected_rows >= max_rows {
+                break;
+            }
+
+            // Add row values to result columns
+            for (col_idx, value) in entry.row.values.iter().enumerate() {
+                match value {
+                    ColumnValue::Int64(v) => {
+                        if let ResultColumn::Int64(ref mut col) = result_columns[col_idx] {
+                            col.push(*v);
+                        }
+                    }
+                    ColumnValue::Varchar(v) => {
+                        if let ResultColumn::Varchar(ref mut col) = result_columns[col_idx] {
+                            col.push(v.clone());
+                        }
+                    }
+                    ColumnValue::Bool(v) => {
+                        if let ResultColumn::Bool(ref mut col) = result_columns[col_idx] {
+                            col.push(*v);
+                        }
+                    }
+                }
+            }
+            collected_rows += 1;
+
+            // Read next row from same chunk
+            if let Some(next_row) = readers[entry.chunk_index].read_next()? {
+                heap.push(Reverse(ChunkHeapEntry {
+                    row: next_row,
+                    chunk_index: entry.chunk_index,
+                    order_directions: order_directions.clone(),
+                }));
+            }
+        }
+
+        Ok(vec![QueryResultItem {
+            row_count: collected_rows as i32,
+            columns: result_columns,
         }])
     }
 
